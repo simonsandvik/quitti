@@ -80,5 +80,5 @@ export const authOptions: NextAuthOptions = {
         error: "/",
     },
     */
-    debug: true,
+    debug: false,
 };
