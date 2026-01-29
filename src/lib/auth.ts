@@ -20,7 +20,7 @@ export const authOptions: NextAuthOptions = {
             clientSecret: process.env.GOOGLE_CLIENT_SECRET || "",
             authorization: {
                 params: {
-                    scope: "openid email profile https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/adwords",
+                    scope: "openid email profile https://www.googleapis.com/auth/gmail.readonly",
                     prompt: "consent",
                     access_type: "offline",
                     response_type: "code",
@@ -33,7 +33,7 @@ export const authOptions: NextAuthOptions = {
             tenantId: process.env.AZURE_AD_TENANT_ID || "common",
             authorization: {
                 params: {
-                    scope: "openid profile email offline_access User.Read Mail.Read https://management.azure.com/user_impersonation",
+                    scope: "openid profile email offline_access User.Read Mail.Read",
                 },
             },
         }),

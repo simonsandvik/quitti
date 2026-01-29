@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { useSession, signOut } from "next-auth/react";
 
 interface HeaderProps {
@@ -25,11 +26,13 @@ export const Header = ({ onReset }: HeaderProps) => {
                         }}
                         className="flex items-center gap-3 hover:opacity-80 transition-opacity group"
                     >
-                        <div className="w-10 h-10 bg-gradient-to-br from-emerald-500 to-cyan-500 rounded-xl flex items-center justify-center shadow-lg shadow-emerald-500/20 group-hover:scale-110 transition-transform duration-300">
-                            <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 10h.01M15 10h.01M12 12h.01" />
-                            </svg>
+                        <div className="w-10 h-10 relative group-hover:scale-110 transition-transform duration-300">
+                            <Image
+                                src="/logo.png"
+                                alt="Quitti Logo"
+                                fill
+                                className="object-contain rounded-xl shadow-lg shadow-emerald-500/20"
+                            />
                         </div>
                         <span className="text-2xl font-black bg-gradient-to-r from-emerald-600 to-cyan-600 bg-clip-text text-transparent tracking-tighter">
                             Quitti
