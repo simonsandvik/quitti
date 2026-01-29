@@ -1,11 +1,11 @@
--- NEXTAUTH SCHEMA FOR SUPABASE ADAPTER
+-- NEXTAUTH SCHEMA IN PUBLIC (Compatibility Fix)
 -- Required by @auth/supabase-adapter
 
--- 1. Create Schema
-CREATE SCHEMA IF NOT EXISTS next_auth;
+-- 1. Ensure UUID extension exists
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- 2. Users Table
-CREATE TABLE IF NOT EXISTS next_auth.users (
+CREATE TABLE IF NOT EXISTS public.users (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   name TEXT,
   email TEXT UNIQUE,
@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS next_auth.users (
 );
 
 -- 3. Accounts Table
-CREATE TABLE IF NOT EXISTS next_auth.accounts (
+CREATE TABLE IF NOT EXISTS public.accounts (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   type TEXT NOT NULL,
   provider TEXT NOT NULL,
@@ -28,26 +28,27 @@ CREATE TABLE IF NOT EXISTS next_auth.accounts (
   session_state TEXT,
   oauth_token_secret TEXT,
   oauth_token TEXT,
-  "userId" UUID REFERENCES next_auth.users(id) ON DELETE CASCADE,
+  "userId" UUID REFERENCES public.users(id) ON DELETE CASCADE,
   UNIQUE(provider, "providerAccountId")
 );
 
 -- 4. Sessions Table
-CREATE TABLE IF NOT EXISTS next_auth.sessions (
+CREATE TABLE IF NOT EXISTS public.sessions (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   expires TIMESTAMP WITH TIME ZONE NOT NULL,
   "sessionToken" TEXT UNIQUE NOT NULL,
-  "userId" UUID REFERENCES next_auth.users(id) ON DELETE CASCADE
+  "userId" UUID REFERENCES public.users(id) ON DELETE CASCADE
 );
 
 -- 5. Verification Tokens Table
-CREATE TABLE IF NOT EXISTS next_auth.verification_tokens (
+CREATE TABLE IF NOT EXISTS public.verification_tokens (
   identifier TEXT,
   token TEXT PRIMARY KEY,
   expires TIMESTAMP WITH TIME ZONE NOT NULL
 );
 
 -- 6. Permissions (NextAuth needs to access this schema)
-GRANT USAGE ON SCHEMA next_auth TO service_role;
-GRANT ALL ON ALL TABLES IN SCHEMA next_auth TO service_role;
-GRANT ALL ON ALL SEQUENCES IN SCHEMA next_auth TO service_role;
+-- Note: These tables are in public, so service_role usually has access by default, 
+-- but we grant it explicitly to be safe.
+GRANT ALL ON ALL TABLES IN SCHEMA public TO service_role;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO service_role;
