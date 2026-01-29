@@ -79,5 +79,5 @@ export const authOptions: NextAuthOptions = {
         signIn: "/", // Custom login page (we use the modal/landing)
         error: "/", // Error page
     },
-    debug: process.env.NODE_ENV === "development",
+    debug: true,
 };
