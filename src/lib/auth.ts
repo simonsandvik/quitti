@@ -8,13 +8,10 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 export const authOptions: NextAuthOptions = {
-    adapter: (supabaseUrl && supabaseKey)
-        ? SupabaseAdapter({
-            url: supabaseUrl,
-            secret: supabaseKey,
-            schema: "public",
-        }) as any
-        : undefined,
+    adapter: SupabaseAdapter({
+        url: process.env.NEXT_PUBLIC_SUPABASE_URL || "",
+        secret: process.env.SUPABASE_SERVICE_ROLE_KEY || "",
+    }) as any,
     secret: process.env.NEXTAUTH_SECRET,
     providers: [
         GoogleProvider({
