@@ -17,6 +17,7 @@ export const authOptions: NextAuthOptions = {
         GoogleProvider({
             clientId: process.env.GOOGLE_CLIENT_ID || "",
             clientSecret: process.env.GOOGLE_CLIENT_SECRET || "",
+            allowDangerousEmailAccountLinking: true,
             authorization: {
                 params: {
                     scope: "openid email profile https://www.googleapis.com/auth/gmail.readonly",
@@ -30,6 +31,7 @@ export const authOptions: NextAuthOptions = {
             clientId: process.env.AZURE_AD_CLIENT_ID || "",
             clientSecret: process.env.AZURE_AD_CLIENT_SECRET || "",
             tenantId: process.env.AZURE_AD_TENANT_ID || "common",
+            allowDangerousEmailAccountLinking: true,
             authorization: {
                 params: {
                     scope: "openid profile email offline_access User.Read Mail.Read",
@@ -72,11 +74,9 @@ export const authOptions: NextAuthOptions = {
             return session;
         },
     },
-    /* 
     pages: {
-        signIn: "/", // Custom login page (we use the modal/landing)
-        error: "/", // Error page
+        signIn: "/",
+        error: "/",
     },
-    */
     debug: true,
 };

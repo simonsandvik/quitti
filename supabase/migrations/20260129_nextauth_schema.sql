@@ -1,11 +1,14 @@
--- NEXTAUTH SCHEMA IN PUBLIC (Compatibility Fix)
--- Required by @auth/supabase-adapter
+-- NEXTAUTH SCHEMA (Standard Setup)
+-- Idempotent version
 
--- 1. Ensure UUID extension exists
+-- 1. Create Schema
+CREATE SCHEMA IF NOT EXISTS next_auth;
+
+-- 2. Ensure UUID extension exists
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
--- 2. Users Table
-CREATE TABLE IF NOT EXISTS public.users (
+-- 3. Users Table
+CREATE TABLE IF NOT EXISTS next_auth.users (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   name TEXT,
   email TEXT UNIQUE,
@@ -13,8 +16,8 @@ CREATE TABLE IF NOT EXISTS public.users (
   image TEXT
 );
 
--- 3. Accounts Table
-CREATE TABLE IF NOT EXISTS public.accounts (
+-- 4. Accounts Table
+CREATE TABLE IF NOT EXISTS next_auth.accounts (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   type TEXT NOT NULL,
   provider TEXT NOT NULL,
@@ -28,27 +31,27 @@ CREATE TABLE IF NOT EXISTS public.accounts (
   session_state TEXT,
   oauth_token_secret TEXT,
   oauth_token TEXT,
-  "userId" UUID REFERENCES public.users(id) ON DELETE CASCADE,
+  "userId" UUID REFERENCES next_auth.users(id) ON DELETE CASCADE,
   UNIQUE(provider, "providerAccountId")
 );
 
--- 4. Sessions Table
-CREATE TABLE IF NOT EXISTS public.sessions (
+-- 5. Sessions Table
+CREATE TABLE IF NOT EXISTS next_auth.sessions (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   expires TIMESTAMP WITH TIME ZONE NOT NULL,
   "sessionToken" TEXT UNIQUE NOT NULL,
-  "userId" UUID REFERENCES public.users(id) ON DELETE CASCADE
+  "userId" UUID REFERENCES next_auth.users(id) ON DELETE CASCADE
 );
 
--- 5. Verification Tokens Table
-CREATE TABLE IF NOT EXISTS public.verification_tokens (
+-- 6. Verification Tokens Table
+CREATE TABLE IF NOT EXISTS next_auth.verification_tokens (
   identifier TEXT,
   token TEXT PRIMARY KEY,
   expires TIMESTAMP WITH TIME ZONE NOT NULL
 );
 
--- 6. Permissions (NextAuth needs to access this schema)
--- Note: These tables are in public, so service_role usually has access by default, 
--- but we grant it explicitly to be safe.
-GRANT ALL ON ALL TABLES IN SCHEMA public TO service_role;
-GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO service_role;
+-- 7. Permissions
+GRANT USAGE ON SCHEMA next_auth TO service_role;
+GRANT ALL ON ALL TABLES IN SCHEMA next_auth TO service_role;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA next_auth TO service_role;
+GRANT ALL ON ALL ROUTINES IN SCHEMA next_auth TO service_role;

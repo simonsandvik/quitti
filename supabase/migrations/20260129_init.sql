@@ -1,18 +1,27 @@
 -- QUITTI PLATFORM SCHEMA (SUPABASE)
+-- Idempotent version
+
+-- 0. Ensure UUID extension
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- 1. Organizations (Teams)
-CREATE TABLE organizations (
+CREATE TABLE IF NOT EXISTS public.organizations (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   name TEXT NOT NULL,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
 -- 2. Organizations Members (Roles)
-CREATE TYPE org_role AS ENUM ('admin', 'contributor', 'bookkeeper');
-CREATE TABLE organization_members (
+DO $$ BEGIN
+    CREATE TYPE org_role AS ENUM ('admin', 'contributor', 'bookkeeper');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+CREATE TABLE IF NOT EXISTS public.organization_members (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
-  user_id UUID REFERENCES public.users(id) ON DELETE CASCADE,
+  organization_id UUID REFERENCES public.organizations(id) ON DELETE CASCADE,
+  user_id UUID REFERENCES next_auth.users(id) ON DELETE CASCADE,
   role org_role DEFAULT 'contributor',
   status TEXT DEFAULT 'active',
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -20,38 +29,39 @@ CREATE TABLE organization_members (
 );
 
 -- 3. Batches (Shared Lists)
-CREATE TABLE batches (
+CREATE TABLE IF NOT EXISTS public.batches (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
+  organization_id UUID REFERENCES public.organizations(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
-  status TEXT DEFAULT 'active', -- active, archived, paid
-  created_by UUID REFERENCES public.users(id),
+  status TEXT DEFAULT 'active',
+  created_by UUID REFERENCES next_auth.users(id),
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
 -- 4. Receipt Requests (Queue)
-CREATE TABLE receipt_requests (
+CREATE TABLE IF NOT EXISTS public.receipt_requests (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  batch_id UUID REFERENCES batches(id) ON DELETE CASCADE,
+  batch_id UUID REFERENCES public.batches(id) ON DELETE CASCADE,
   merchant TEXT NOT NULL,
   amount NUMERIC(10, 2) NOT NULL,
   currency TEXT DEFAULT 'EUR',
   date DATE,
-  status TEXT DEFAULT 'pending', -- pending, found, missing
+  status TEXT DEFAULT 'pending',
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
 -- 5. Matched Receipts (Files)
-CREATE TABLE matched_receipts (
+CREATE TABLE IF NOT EXISTS public.matched_receipts (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  request_id UUID REFERENCES receipt_requests(id) ON DELETE CASCADE,
-  file_url TEXT NOT NULL, -- Storage link
-  matched_by UUID REFERENCES public.users(id),
+  request_id UUID REFERENCES public.receipt_requests(id) ON DELETE CASCADE,
+  file_url TEXT NOT NULL,
+  matched_by UUID REFERENCES next_auth.users(id),
   confidence INTEGER DEFAULT 0,
   details TEXT,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
--- 6. RLS (Row Level Security) - Basic Examples
-ALTER TABLE organizations ENABLE ROW LEVEL SECURITY;
--- (Add policies to only allow members to see their org, etc.)
+-- 6. RLS
+ALTER TABLE public.organizations ENABLE ROW LEVEL SECURITY;
+GRANT ALL ON ALL TABLES IN SCHEMA public TO service_role;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO service_role;
