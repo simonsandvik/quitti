@@ -12,7 +12,8 @@ export const authOptions: NextAuthOptions = {
         ? SupabaseAdapter({
             url: supabaseUrl,
             secret: supabaseKey,
-        })
+            schema: "public",
+        }) as any
         : undefined,
     secret: process.env.NEXTAUTH_SECRET,
     providers: [
