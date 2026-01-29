@@ -152,8 +152,13 @@ export default function Home() {
       };
 
       loadCloudData();
+
+      // If user is on hero but authenticated, move them to upload step
+      if (step === "hero") {
+        setStep("upload");
+      }
     }
-  }, [status, session]);
+  }, [status, session, step]);
 
   // Save receipts to localStorage
   useEffect(() => {
