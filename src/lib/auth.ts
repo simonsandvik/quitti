@@ -75,9 +75,11 @@ export const authOptions: NextAuthOptions = {
             return session;
         },
     },
+    /* 
     pages: {
         signIn: "/", // Custom login page (we use the modal/landing)
         error: "/", // Error page
     },
+    */
     debug: true,
 };
