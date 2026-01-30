@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import Image from "next/image";
-import { useSession, signOut } from "next-auth/react";
+import { useSession, signOut, signIn } from "next-auth/react";
 
 interface HeaderProps {
     onReset?: () => void;
@@ -76,9 +76,17 @@ export const Header = ({ onReset }: HeaderProps) => {
                                 </button>
                             </div>
                         ) : (
-                            <a href="#pricing" className="px-5 py-2.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 text-sm font-semibold rounded-lg border border-emerald-500/20 transition-all">
-                                Get Started
-                            </a>
+                            <div className="flex items-center gap-4">
+                                <button
+                                    onClick={() => signIn(undefined, { callbackUrl: '/' })}
+                                    className="text-slate-600 hover:text-slate-900 font-semibold text-sm transition-colors"
+                                >
+                                    Sign In
+                                </button>
+                                <a href="#pricing" className="px-5 py-2.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 text-sm font-semibold rounded-lg border border-emerald-500/20 transition-all">
+                                    Get Started
+                                </a>
+                            </div>
                         )}
                     </div>
                 </div>
