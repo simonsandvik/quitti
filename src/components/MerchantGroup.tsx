@@ -31,12 +31,41 @@ export const MerchantGroup = ({
 }: MerchantGroupProps) => {
     const sortedReceipts = [...receipts].sort((a, b) => b.date.localeCompare(a.date));
 
+    // Calculate group stats for color coding
+    const stats = sortedReceipts.reduce((acc, req) => {
+        const manualFile = manualFiles[req.id];
+        const match = matches.find(m => m.receiptId === req.id);
+        const isMissing = missingIds.has(req.id);
+        const status = isMissing ? "MISSING" : (manualFile ? "FOUND" : (match ? match.status : "NOT_FOUND"));
+
+        if (status === "FOUND") acc.found++;
+        acc.total++;
+        return acc;
+    }, { found: 0, total: 0 });
+
+    const isAllFound = stats.found === stats.total;
+    const isSomeFound = stats.found > 0 && !isAllFound;
+
+    const headerBorderColor = isAllFound
+        ? "border-emerald-500"
+        : isSomeFound
+            ? "border-amber-400 shadow-[0_0_15px_rgba(251,191,36,0.1)] active:scale-[0.99] transition-all"
+            : "border-slate-200 opacity-80";
+
     return (
         <div className="mb-6 last:mb-0">
-            <div className="px-4 py-3 bg-slate-50 border-l-4 border-emerald-500 flex justify-between items-center rounded-t-xl">
-                <h3 className="text-sm font-extrabold tracking-wider uppercase text-slate-900">{merchant}</h3>
+            <div className={`px-4 py-3 bg-slate-50 border-l-4 ${headerBorderColor} flex justify-between items-center rounded-t-xl transition-all duration-500`}>
+                <div className="flex items-center gap-3">
+                    <h3 className="text-sm font-extrabold tracking-wider uppercase text-slate-900">{merchant}</h3>
+                    {isSomeFound && (
+                        <span className="flex h-2 w-2 relative">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                            <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                        </span>
+                    )}
+                </div>
                 <span className="text-[10px] text-slate-600 font-bold bg-slate-200/50 px-2 py-1 rounded-lg">
-                    {receipts.length} {receipts.length === 1 ? "RECEIPT" : "RECEIPTS"}
+                    {stats.found} / {stats.total} {stats.total === 1 ? "RECEIPT" : "RECEIPTS"}
                 </span>
             </div>
             <div className="bg-white border border-slate-100 border-t-0 rounded-b-xl overflow-hidden shadow-sm">

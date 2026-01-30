@@ -312,6 +312,7 @@ export const ResultsTable = ({ receipts, matches, autoFoundFiles, onExport, onRe
                         return status === "FOUND" || !!manualFiles[r.id];
                     }).length;
                     const isComplete = groupFoundCount === groupReceipts.length && groupReceipts.length > 0;
+                    const isPartial = groupFoundCount > 0 && !isComplete;
                     const isExpanded = expandedGroups.has(mainGroup);
                     const subMerchants = groupMap.get(mainGroup) || [];
 
@@ -321,7 +322,7 @@ export const ResultsTable = ({ receipts, matches, autoFoundFiles, onExport, onRe
                             initial={{ opacity: 0, y: 10 }}
                             animate={{ opacity: 1, y: 0 }}
                             transition={{ delay: index * 0.1 }}
-                            className={`bg-white rounded-xl transition-all shadow-sm ${isComplete ? "border border-emerald-500/30 shadow-[0_0_20px_rgba(16,185,129,0.05)]" : "border border-slate-100"}`}
+                            className={`bg-white rounded-xl transition-all shadow-sm ${isComplete ? "border border-emerald-500/30 shadow-[0_0_20px_rgba(16,185,129,0.05)]" : isPartial ? "border border-amber-400/30 shadow-[0_0_20px_rgba(251,191,36,0.05)]" : "border border-slate-100"}`}
                         >
                             <div
                                 onClick={() => toggleGroup(mainGroup)}
@@ -335,7 +336,7 @@ export const ResultsTable = ({ receipts, matches, autoFoundFiles, onExport, onRe
                                         ▶
                                     </motion.div>
                                     <div className="relative">
-                                        <div className={`w-2 h-2 rounded-full ${isComplete ? "bg-emerald-500" : (isExpanded ? "bg-emerald-500/50" : "bg-slate-200")}`}></div>
+                                        <div className={`w-2 h-2 rounded-full ${isComplete ? "bg-emerald-500" : isPartial ? "bg-amber-400" : (isExpanded ? "bg-emerald-500/50" : "bg-slate-200")}`}></div>
                                         {isComplete && (
                                             <motion.div
                                                 initial={{ scale: 0 }}
@@ -345,13 +346,23 @@ export const ResultsTable = ({ receipts, matches, autoFoundFiles, onExport, onRe
                                                 <span className="text-[10px] text-white font-bold">✓</span>
                                             </motion.div>
                                         )}
+                                        {isPartial && (
+                                            <motion.div
+                                                initial={{ scale: 0 }}
+                                                animate={{ scale: 1 }}
+                                                className="absolute -left-1 -top-1 w-4 h-4 bg-amber-400 rounded-full flex items-center justify-center shadow-[0_0_10px_rgba(251,191,36,0.5)] animate-pulse"
+                                            >
+                                                <span className="text-[10px] text-white font-bold inline-block animate-bounce">!</span>
+                                            </motion.div>
+                                        )}
                                     </div>
 
                                     <div className="flex flex-col">
                                         <div className="flex items-center gap-2">
-                                            <h3 className={`text-base font-bold m-0 ${isComplete ? "text-emerald-600" : "text-slate-900"}`}>{mainGroup}</h3>
+                                            <h3 className={`text-base font-bold m-0 ${isComplete ? "text-emerald-600" : isPartial ? "text-amber-600" : "text-slate-900"}`}>{mainGroup}</h3>
                                         </div>
-                                        {isComplete && <span className="text-[10px] text-emerald-500 text-opacity-80">All found</span>}
+                                        {isComplete && <span className="text-[10px] text-emerald-500 text-opacity-80 font-bold uppercase tracking-tight">All found</span>}
+                                        {isPartial && <span className="text-[10px] text-amber-500 text-opacity-80 font-bold uppercase tracking-tight">Partial match</span>}
                                     </div>
 
                                     <span className="text-xs text-slate-500 bg-white/5 px-2 py-0.5 rounded-full ml-2">
