@@ -80,7 +80,7 @@ export const matchReceipt = (request: ReceiptRequest, email: EmailCandidate): Ma
         detailsParts.push(`Date: Week (${diffDays}d)`);
     }
 
-    // --- 2. Merchant & Keyword Scoring (Max 40) ---
+    // --- 2. Merchant & Keyword Scoring (Max 40 -> Uncapped for Domains) ---
     const merchantLower = request.merchant.toLowerCase();
     const senderLower = email.sender.toLowerCase();
     const subjectLower = email.subject.toLowerCase();
@@ -88,10 +88,11 @@ export const matchReceipt = (request: ReceiptRequest, email: EmailCandidate): Ma
     const senderNameLower = senderLower.split('<')[0].trim();
 
     const rule = getMerchantRule(request.merchant);
-    let merchantScore = 0;
+    let baseNameScore = 0;
+    let bonusScore = 0;
     let merchantHit = "";
 
-    // A. Direct Name Match (35 pts)
+    // A. Direct Name Match (30 pts)
     // VR FIX: Allow 2-letter words but block specific stop words
     const STOP_WORDS = new Set(["oy", "ab", "ltd", "inc", "corp", "pllc", "gmbh", "the", "and", "for", "receipt", "payment", "invoice", "no-reply", "support", "hello", "team", "to", "at", "on", "in", "of", "by", "is", "it", "no"]);
     const merchantTokens = merchantLower.split(/[^a-z0-9]+/g).filter(t => t.length >= 2 && !STOP_WORDS.has(t));
@@ -106,7 +107,7 @@ export const matchReceipt = (request: ReceiptRequest, email: EmailCandidate): Ma
     });
 
     if (isDirectMatch) {
-        merchantScore = 35;
+        baseNameScore = 30;
         merchantHit = "Direct Name Match";
     } else {
         // B. Fuzzy Name Match (15 pts)
@@ -119,21 +120,21 @@ export const matchReceipt = (request: ReceiptRequest, email: EmailCandidate): Ma
         });
 
         if (isFuzzy) {
-            merchantScore = 15;
+            baseNameScore = 15;
             merchantHit = "Fuzzy Name Match";
         }
     }
 
-    // C. Domain Match (Boosting +20)
+    // C. Domain Match (Boosting +35)
+    // High trust signal
     if (rule?.domains) {
         if (rule.domains.some(d => senderLower.includes(d))) {
-            merchantScore += 20;
+            bonusScore += 35;
             detailsParts.push(`Domain Match (${rule.domains[0]})`);
         }
     }
 
     // D. Keyword Anchor Match (Boosting +15)
-    // If we haven't hit a strong name match yet, keywords are critical.
     if (rule?.keywords) {
         const foundKeyword = rule.keywords.find(k =>
             subjectLower.includes(k.toLowerCase()) ||
@@ -141,13 +142,14 @@ export const matchReceipt = (request: ReceiptRequest, email: EmailCandidate): Ma
         );
 
         if (foundKeyword) {
-            merchantScore += 15;
+            bonusScore += 15;
             detailsParts.push(`Keyword Match (${foundKeyword})`);
         }
     }
 
-    // Cap merchant score at 40 (decreased from 60)
-    merchantScore = Math.min(merchantScore, 40);
+    // Combine Scores
+    // We cap the Name Match impact, but allow Domains/Keywords to boost freely
+    const merchantScore = Math.min(baseNameScore, 30) + bonusScore;
 
     if (merchantScore > 0) {
         score += merchantScore;
