@@ -63,24 +63,24 @@ export const matchReceipt = (request: ReceiptRequest, email: EmailCandidate): Ma
     let score = 0;
     const detailsParts: string[] = [];
 
-    // --- 1. Date Scoring (Max 45) ---
+    // --- 1. Date Scoring (Max 25) ---
     const reqDate = new Date(request.date);
     const emailDate = new Date(email.date);
     const diffTime = Math.abs(emailDate.getTime() - reqDate.getTime());
     const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
     if (diffTime <= 1000 * 60 * 60 * 24) { // Within 24h
-        score += 45;
+        score += 25;
         detailsParts.push("Date: Exact (24h)");
     } else if (diffDays <= 3) { // Close range
-        score += 35;
+        score += 15;
         detailsParts.push(`Date: Close (${diffDays}d)`);
     } else if (diffDays <= 7) { // Weekly range
-        score += 20;
+        score += 5;
         detailsParts.push(`Date: Week (${diffDays}d)`);
     }
 
-    // --- 2. Merchant & Keyword Scoring (Max 60) ---
+    // --- 2. Merchant & Keyword Scoring (Max 40) ---
     const merchantLower = request.merchant.toLowerCase();
     const senderLower = email.sender.toLowerCase();
     const subjectLower = email.subject.toLowerCase();
@@ -91,7 +91,7 @@ export const matchReceipt = (request: ReceiptRequest, email: EmailCandidate): Ma
     let merchantScore = 0;
     let merchantHit = "";
 
-    // A. Direct Name Match (50 pts)
+    // A. Direct Name Match (35 pts)
     // VR FIX: Allow 2-letter words but block specific stop words
     const STOP_WORDS = new Set(["oy", "ab", "ltd", "inc", "corp", "pllc", "gmbh", "the", "and", "for", "receipt", "payment", "invoice", "no-reply", "support", "hello", "team", "to", "at", "on", "in", "of", "by", "is", "it", "no"]);
     const merchantTokens = merchantLower.split(/[^a-z0-9]+/g).filter(t => t.length >= 2 && !STOP_WORDS.has(t));
@@ -106,10 +106,10 @@ export const matchReceipt = (request: ReceiptRequest, email: EmailCandidate): Ma
     });
 
     if (isDirectMatch) {
-        merchantScore = 50;
+        merchantScore = 35;
         merchantHit = "Direct Name Match";
     } else {
-        // B. Fuzzy Name Match (30 pts)
+        // B. Fuzzy Name Match (15 pts)
         const isFuzzy = merchantTokens.some(token => {
             if (token.length > 4) {
                 const senderParts = senderNameLower.split(/[^a-z0-9]+/g);
@@ -119,7 +119,7 @@ export const matchReceipt = (request: ReceiptRequest, email: EmailCandidate): Ma
         });
 
         if (isFuzzy) {
-            merchantScore = 30;
+            merchantScore = 15;
             merchantHit = "Fuzzy Name Match";
         }
     }
@@ -146,8 +146,8 @@ export const matchReceipt = (request: ReceiptRequest, email: EmailCandidate): Ma
         }
     }
 
-    // Cap merchant score at 60 (don't over-boost)
-    merchantScore = Math.min(merchantScore, 60);
+    // Cap merchant score at 40 (decreased from 60)
+    merchantScore = Math.min(merchantScore, 40);
 
     if (merchantScore > 0) {
         score += merchantScore;
@@ -155,7 +155,7 @@ export const matchReceipt = (request: ReceiptRequest, email: EmailCandidate): Ma
     }
 
 
-    // --- 3. Attachment Check (Max 30) ---
+    // --- 3. Attachment Check (Max 20) ---
     // STRICT MODE: Must have attachment
     if (!email.hasAttachments || email.attachments.length === 0) {
         return {
@@ -167,7 +167,7 @@ export const matchReceipt = (request: ReceiptRequest, email: EmailCandidate): Ma
             matchedHtml: undefined
         };
     }
-    score += 30;
+    score += 20;
     detailsParts.push("Has Attachment");
 
 
@@ -213,18 +213,18 @@ export function matchReceiptByContent(text: string, request: ReceiptRequest): Co
         if (!isNaN(parsedAmount) && parsedAmount > 0) {
             const diff = Math.abs(parsedAmount - request.amount) / request.amount;
 
-            // Exact Amount (+50)
+            // Exact Amount (+70)
             if (diff <= 0.01) {
                 amountFound = true;
-                score += 50;
+                score += 70;
                 details.push(`Amount Exact Match (${parsedAmount})`);
                 break;
             }
-            // Fuzzy Amount (+30)
+            // Fuzzy Amount (+40)
             else if (diff <= tolerance) {
                 if (!amountFound) {
                     amountFound = true;
-                    score += 30;
+                    score += 40;
                     details.push(`Amount Fuzzy Match (${parsedAmount})`);
                 }
             }
@@ -235,7 +235,7 @@ export function matchReceiptByContent(text: string, request: ReceiptRequest): Co
         details.push(`Amount NOT found (${request.amount})`);
     }
 
-    // --- 2. Merchant & Keyword Scoring (Max 40) ---
+    // --- 2. Merchant & Keyword Scoring (Max 20) ---
     const merchantLower = request.merchant.toLowerCase();
 
     // VR FIX: Allow 2-letter tokens here too, matching the logic in matchReceipt
@@ -244,7 +244,7 @@ export function matchReceiptByContent(text: string, request: ReceiptRequest): Co
 
     let merchantScore = 0;
 
-    // A. Direct Token Match (+40)
+    // A. Direct Token Match (+20)
     if (tokens.some(t => {
         if (t.length < 4) {
             const regex = new RegExp(`\\b${t}\\b`, 'i');
@@ -252,7 +252,7 @@ export function matchReceiptByContent(text: string, request: ReceiptRequest): Co
         }
         return normText.includes(t);
     })) {
-        merchantScore += 40;
+        merchantScore += 20;
         details.push("Merchant Name Found");
     }
     // B. Rule-based Keyword Match (+25)
