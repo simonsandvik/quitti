@@ -152,6 +152,17 @@ export const matchReceipt = (request: ReceiptRequest, email: EmailCandidate): Ma
         }
     }
 
+    // E. Global Hallmark Match (Boosting +10)
+    // Helps with unknown merchants or missing keywords
+    const GLOBAL_HALLMARKS = ["receipt", "invoice", "payment", "order", "confirmation", "booking", "ticket", "kvitto", "lasku", "faktura", "kuitti", "tilausvahvistus", "bokning", "biljett"];
+    const foundHallmark = GLOBAL_HALLMARKS.find(h => subjectLower.includes(h));
+
+    // Only apply if we haven't already hit a specific keyword match (to avoid double counting)
+    if (foundHallmark && !detailsParts.some(d => d.includes("Keyword Match"))) {
+        bonusScore += 10;
+        detailsParts.push(`Global Hallmark (${foundHallmark})`);
+    }
+
     // Combine Scores
     // We cap the Name Match impact, but allow Domains/Keywords to boost freely
     const merchantScore = Math.min(baseNameScore, 30) + bonusScore;
