@@ -74,12 +74,10 @@ export const authOptions: NextAuthOptions = {
             return session;
         },
     },
-    /*
     pages: {
-        signIn: "/",
-        error: "/",
+        signIn: "/login",
+        error: "/login",
     },
-    */
     debug: false,
     cookies: {
         sessionToken: {

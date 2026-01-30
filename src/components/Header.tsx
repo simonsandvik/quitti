@@ -77,12 +77,12 @@ export const Header = ({ onReset }: HeaderProps) => {
                             </div>
                         ) : (
                             <div className="flex items-center gap-4">
-                                <button
-                                    onClick={() => signIn(undefined, { callbackUrl: '/' })}
+                                <Link
+                                    href="/login"
                                     className="text-slate-600 hover:text-slate-900 font-semibold text-sm transition-colors"
                                 >
                                     Sign In
-                                </button>
+                                </Link>
                                 <a href="#pricing" className="px-5 py-2.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 text-sm font-semibold rounded-lg border border-emerald-500/20 transition-all">
                                     Get Started
                                 </a>
