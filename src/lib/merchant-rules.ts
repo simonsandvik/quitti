@@ -13,8 +13,8 @@ export const MERCHANT_RULES: Record<string, MerchantRule> = {
     },
     "finnair": {
         name: "Finnair",
-        keywords: ["Flight", "Ticket", "Booking Ref", "Matkustaja", "Lento", "Varausvahvistus", "E-ticket", "Eticket", "Receipt", "Kuitti", "Bokning", "Kvitto", "Bokningsbekräftelse"],
-        domains: ["finnair.com", "finnair.fi", "email.finnair.com"]
+        keywords: ["Flight", "Ticket", "Booking Ref", "Matkustaja", "Lento", "Varausvahvistus", "E-ticket", "Eticket", "Receipt", "Kuitti", "Bokning", "Kvitto", "Bokningsbekräftelse", "Amadeus"],
+        domains: ["finnair.com", "finnair.fi", "email.finnair.com", "amadeus.com"]
     },
     "github": {
         name: "GitHub",
