@@ -96,3 +96,36 @@ export async function getBatchResults(batchId: string) {
     if (error) throw error;
     return data;
 }
+
+/**
+ * ADMIN FUNCTIONS
+ */
+
+export async function getAllUsers() {
+    const adminClient = getSupabaseAdmin();
+    // next_auth schema is tricky with RLS, so we use service role to read next_auth.users
+    const { data, error } = await adminClient
+        .schema('next_auth')
+        .from('users')
+        .select('*')
+        .order('name', { ascending: true });
+
+    if (error) throw error;
+    return data;
+}
+
+export async function getAdminStats() {
+    const adminClient = getSupabaseAdmin();
+
+    const { count: usersCount } = await adminClient.schema('next_auth').from('users').select('*', { count: 'exact', head: true });
+    const { count: batchCount } = await adminClient.from('batches').select('*', { count: 'exact', head: true });
+    const { count: receiptsCount } = await adminClient.from('receipt_requests').select('*', { count: 'exact', head: true });
+    const { count: foundCount } = await adminClient.from('receipt_requests').select('*', { count: 'exact', head: true }).eq('status', 'found');
+
+    return {
+        users: usersCount || 0,
+        batches: batchCount || 0,
+        receipts: receiptsCount || 0,
+        found: foundCount || 0
+    };
+}
