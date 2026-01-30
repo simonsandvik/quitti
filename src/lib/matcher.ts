@@ -63,6 +63,11 @@ export const matchReceipt = (request: ReceiptRequest, email: EmailCandidate): Ma
     let score = 0;
     const detailsParts: string[] = [];
 
+    // DEBUG: Log the sender to debug Domain Matching issues
+    if (request.merchant.toLowerCase().includes("finnair")) {
+        console.log(`[Matcher Debug] Analyzing Finnair Candidate | Sender: "${email.sender}" | Subject: "${email.subject}"`);
+    }
+
     // --- 1. Date Scoring (Max 25) ---
     const reqDate = new Date(request.date);
     const emailDate = new Date(email.date);
