@@ -13,8 +13,8 @@ export const MERCHANT_RULES: Record<string, MerchantRule> = {
     },
     "finnair": {
         name: "Finnair",
-        keywords: ["Flight", "Ticket", "Booking Ref", "Matkustaja", "Lento", "Varausvahvistus"],
-        domains: ["finnair.com"]
+        keywords: ["Flight", "Ticket", "Booking Ref", "Matkustaja", "Lento", "Varausvahvistus", "E-ticket", "Eticket", "Receipt", "Kuitti", "Bokning"],
+        domains: ["finnair.com", "finnair.fi", "email.finnair.com"]
     },
     "github": {
         name: "GitHub",
@@ -88,8 +88,8 @@ export const MERCHANT_RULES: Record<string, MerchantRule> = {
     },
     "vr": {
         name: "VR",
-        keywords: ["Matkustaja", "Lippu", "Varaus", "Juna", "Pendolino", "InterCity", "Resenär", "Biljett", "Bokning", "Tåg", "Plats"],
-        domains: ["vr.fi"]
+        keywords: ["Matkustaja", "Lippu", "Varaus", "Juna", "Pendolino", "InterCity", "Resenär", "Biljett", "Bokning", "Tåg", "Plats", "Matkalippu", "Kiitos", "Tilausvahvistus"],
+        domains: ["vr.fi", "shop.vr.fi"]
     }
 };
 
