@@ -266,6 +266,9 @@ export const ResultsTable = ({ receipts, matches, autoFoundFiles, activeBatchId,
                     <Button variant="primary" onClick={() => onExport(manualFiles)} className="bg-emerald-500 hover:bg-emerald-600 text-white shadow-xl shadow-emerald-500/20 px-6 py-2 h-auto border-0 rounded-xl">
                         Download Finished ZIP
                     </Button>
+                    <Button variant="secondary" onClick={() => setShowTeamModal(true)} className="bg-white hover:bg-slate-50 text-slate-600 border border-slate-200 shadow-sm px-4 py-2 h-auto rounded-xl">
+                        Team
+                    </Button>
                     <Button variant="secondary" onClick={() => setShowShareModal(true)} className="bg-white hover:bg-slate-50 text-emerald-600 border border-emerald-100 shadow-sm px-4 py-2 h-auto rounded-xl">
                         Share w/ Bookkeeper
                     </Button>
