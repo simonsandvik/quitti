@@ -1,6 +1,6 @@
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { getSupabaseAdmin, supabase } from "@/lib/supabase";
+import { getSupabaseAdmin } from "@/lib/supabase";
 import { nanoid } from "nanoid";
 import { NextResponse } from "next/server";
 
@@ -13,10 +13,11 @@ export async function POST(req: Request) {
 
     try {
         const userId = (session.user as any).id;
+        const admin = getSupabaseAdmin();
 
         // 1. Get User's Organization (For MVP, pick the first one they own/admin)
         // In future, UI pass organizationId
-        const { data: members, error: memError } = await supabase
+        const { data: members, error: memError } = await admin
             .from("organization_members")
             .select("organization_id, role")
             .eq("user_id", userId)
@@ -28,7 +29,7 @@ export async function POST(req: Request) {
         // If no org found, maybe they haven't set one up?
         if (!orgId) {
             // Check if they have ANY org
-            const { data: anyOrg } = await supabase
+            const { data: anyOrg } = await admin
                 .from("organization_members")
                 .select("organization_id")
                 .eq("user_id", userId)
@@ -38,7 +39,6 @@ export async function POST(req: Request) {
                 return NextResponse.json({ error: "Only Admins can invite users." }, { status: 403 });
             } else {
                 // Create a Personal Org for them instantly
-                const admin = getSupabaseAdmin();
                 const { data: newOrg } = await admin.from("organizations").insert({ name: `${session.user.name}'s Team` }).select().single();
                 await admin.from("organization_members").insert({ organization_id: newOrg.id, user_id: userId, role: 'admin' });
                 orgId = newOrg.id;
@@ -48,7 +48,7 @@ export async function POST(req: Request) {
         // 2. Generate Invite Token
         const token = nanoid(10); // e.g. "xYz123AbCd"
 
-        const { data: invite, error: invError } = await supabase
+        const { data: invite, error: invError } = await admin
             .from("invitations")
             .insert({
                 organization_id: orgId,
