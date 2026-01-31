@@ -1,7 +1,8 @@
 import { getSupabaseAdmin, createSignedUrl } from "@/lib/supabase";
 import { NextResponse } from "next/server";
 
-export async function GET(req: Request, { params }: { params: { token: string } }) {
+export async function GET(req: Request, props: { params: Promise<{ token: string }> }) {
+    const params = await props.params;
     const admin = getSupabaseAdmin();
     const token = params.token;
 
