@@ -223,69 +223,161 @@ export const scanEmails = async (
                         console.log(`[Scanner Debug] Match FOUND for ${req.merchant} but NO PDF/Attachment. Skipping (Text-Only Disabled).`);
                     }
                 }
-            }
             } catch (err) {
-            console.error(`[Scanner Error] Matching logic failed for ${req.merchant}`, err);
-        }
-    };
+                console.error(`[Scanner Error] Matching logic failed for ${req.merchant}`, err);
+            }
+        };
 
-    // Check for Real Providers
-    if (provider === "google" && token) {
-        console.log(`Starting Gmail Scan for ${email}...`);
-        updateProgress(`Scanning Gmail (${email})...`);
-        try {
-            sessionCandidates = await searchGmail(token, requests, handleSearchProgress);
-        } catch (e) {
-            console.error("Gmail Scan Error", e);
-            sessionCandidates = [];
-        }
-    } else if (provider === "azure-ad" && token) {
-        console.log(`Starting Outlook Scan for ${email}...`);
-        updateProgress(`Scanning Outlook (${email})...`);
-        try {
-            sessionCandidates = await searchOutlook(token, requests, handleSearchProgress, handleCandidateFound);
-        } catch (e) {
-            console.error("Outlook Scan Error", e);
-            sessionCandidates = [];
-        }
-    } else {
-        // Demo Mode / Mock
-        console.log("Starting Mock Scan...");
-        updateProgress("Running demo scan...");
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        sessionCandidates = generateMockEmails(requests);
-    }
-
-    // ==========================================
-    // Google Ads API Scan
-    // ==========================================
-    if (provider === "google" && token) {
-        const developerToken = process.env.NEXT_PUBLIC_GOOGLE_ADS_DEVELOPER_TOKEN;
-
-        if (developerToken) {
-            updateProgress(`Checking Google Ads...`, completedSteps + currentProgressCount);
-            console.log("[Scanner] checking Google Ads API...");
-
+        // Check for Real Providers
+        if (provider === "google" && token) {
+            console.log(`Starting Gmail Scan for ${email}...`);
+            updateProgress(`Scanning Gmail (${email})...`);
             try {
-                const { listAccessibleCustomers, listInvoices, downloadInvoicePdf } = await import("./google-ads");
+                sessionCandidates = await searchGmail(token, requests, handleSearchProgress);
+            } catch (e) {
+                console.error("Gmail Scan Error", e);
+                sessionCandidates = [];
+            }
+        } else if (provider === "azure-ad" && token) {
+            console.log(`Starting Outlook Scan for ${email}...`);
+            updateProgress(`Scanning Outlook (${email})...`);
+            try {
+                sessionCandidates = await searchOutlook(token, requests, handleSearchProgress, handleCandidateFound);
+            } catch (e) {
+                console.error("Outlook Scan Error", e);
+                sessionCandidates = [];
+            }
+        } else {
+            // Demo Mode / Mock
+            console.log("Starting Mock Scan...");
+            updateProgress("Running demo scan...");
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            sessionCandidates = generateMockEmails(requests);
+        }
 
-                const customers = await listAccessibleCustomers(token, developerToken);
-                console.log(`[GoogleAds] Found ${customers.length} accessible customers`);
+        // ==========================================
+        // Google Ads API Scan
+        // ==========================================
+        if (provider === "google" && token) {
+            const developerToken = process.env.NEXT_PUBLIC_GOOGLE_ADS_DEVELOPER_TOKEN;
 
-                for (const customerResourceName of customers) {
-                    // customerResourceName is like "customers/1234567890"
-                    // We need to fetch invoices for this customer
-                    // API needs the 10-digit ID.
+            if (developerToken) {
+                updateProgress(`Checking Google Ads...`, completedSteps + currentProgressCount);
+                console.log("[Scanner] checking Google Ads API...");
+
+                try {
+                    const { listAccessibleCustomers, listInvoices, downloadInvoicePdf } = await import("./google-ads");
+
+                    const customers = await listAccessibleCustomers(token, developerToken);
+                    console.log(`[GoogleAds] Found ${customers.length} accessible customers`);
+
+                    for (const customerResourceName of customers) {
+                        // customerResourceName is like "customers/1234567890"
+                        // We need to fetch invoices for this customer
+                        // API needs the 10-digit ID.
+
+                        try {
+                            const invoices = await listInvoices(token, developerToken, customerResourceName);
+                            console.log(`[GoogleAds] Found ${invoices.length} invoices for ${customerResourceName}`);
+
+                            for (const inv of invoices) {
+                                if (!inv.pdfUrl) continue;
+
+                                const invAmount = parseInt(inv.totalAmountMicros || "0") / 1000000;
+                                const invDate = new Date(inv.issueDate); // YYYY-MM-DD
+
+                                const match = requests.find(r => {
+                                    if (files[r.id]) return false;
+
+                                    // Amount Check
+                                    const diff = Math.abs(r.amount - invAmount);
+                                    const isAmountMatch = diff < 0.05;
+
+                                    // Date Check (Month/Year)
+                                    const reqDate = new Date(r.date);
+                                    const isDateMatch = reqDate.getMonth() === invDate.getMonth() && reqDate.getFullYear() === invDate.getFullYear();
+
+                                    // Merchant "Google"
+                                    const isMerchantMatch = r.merchant.toLowerCase().includes("google");
+
+                                    return isAmountMatch && (isDateMatch || isMerchantMatch);
+                                });
+
+                                if (match) {
+                                    console.log(`[GoogleAds] Matched Invoice ${inv.id} to Request ${match.merchant} (${match.amount})`);
+
+                                    updateProgress(`Downloading Google Ads Invoice for ${match.merchant}...`, completedSteps + currentProgressCount);
+                                    try {
+                                        const base64Pdf = await downloadInvoicePdf(inv.pdfUrl, token);
+
+                                        if (base64Pdf) {
+                                            // Convert base64 to Blob
+                                            const binaryString = atob(base64Pdf);
+                                            const bytes = new Uint8Array(binaryString.length);
+                                            for (let i = 0; i < binaryString.length; i++) {
+                                                bytes[i] = binaryString.charCodeAt(i);
+                                            }
+                                            const blob = new Blob([bytes], { type: "application/pdf" });
+
+                                            const fileName = `GoogleAds_${match.date}_${match.merchant}_${match.amount}.pdf`;
+                                            const file = new File([blob], fileName, { type: "application/pdf" });
+
+                                            files[match.id] = file;
+                                            foundCount++;
+                                            pdfCount++;
+
+                                            matches.push({
+                                                receiptId: match.id,
+                                                emailId: `google-ads-${inv.id}`,
+                                                status: "FOUND",
+                                                confidence: 100,
+                                                details: "Direct Google Ads API Match",
+                                                matchedHtml: "<div>Google Ads API Match</div>"
+                                            });
+
+                                            console.log(`[GoogleAds] Successfully saved ${fileName}`);
+                                        } else {
+                                            console.error(`[GoogleAds] Failed to download PDF (Server returned null)`);
+                                        }
+                                    } catch (err) {
+                                        console.error("[GoogleAds] Failed to download PDF", err);
+                                    }
+                                }
+                            }
+
+                        } catch (e) {
+                            console.error(`[GoogleAds] Failed to scan customer ${customerResourceName}`, e);
+                        }
+                    }
+                } catch (e) {
+                    console.error("[GoogleAds] Scan Failed", e);
+                }
+            } else {
+                console.log("[GoogleAds] Skipping scan - Missing NEXT_PUBLIC_GOOGLE_ADS_DEVELOPER_TOKEN");
+            }
+        }
+
+        if (provider === "azure-ad" && token) {
+            updateProgress(`Checking Azure Billing...`, completedSteps + currentProgressCount);
+            console.log("[Scanner] checking Azure Billing API...");
+            try {
+                // Dynamic import
+                const { listSubscriptions, listInvoices, getInvoiceDownloadUrl } = await import("./azure-billing");
+
+                const subs = await listSubscriptions(token);
+                console.log(`[Azure] Found ${subs.length} subscriptions`);
+
+                for (const sub of subs) {
+                    if (sub.state !== 'Enabled') continue;
 
                     try {
-                        const invoices = await listInvoices(token, developerToken, customerResourceName);
-                        console.log(`[GoogleAds] Found ${invoices.length} invoices for ${customerResourceName}`);
+                        const invoices = await listInvoices(token, sub.subscriptionId);
+                        console.log(`[Azure] Found ${invoices.length} invoices for ${sub.displayName}`);
 
                         for (const inv of invoices) {
-                            if (!inv.pdfUrl) continue;
-
-                            const invAmount = parseInt(inv.totalAmountMicros || "0") / 1000000;
-                            const invDate = new Date(inv.issueDate); // YYYY-MM-DD
+                            // Try to match this invoice to a Request
+                            const invAmount = inv.properties.grandTotal?.amount || 0;
+                            const invDate = new Date(inv.properties.invoicePeriodEndDate);
 
                             const match = requests.find(r => {
                                 if (files[r.id]) return false;
@@ -294,33 +386,32 @@ export const scanEmails = async (
                                 const diff = Math.abs(r.amount - invAmount);
                                 const isAmountMatch = diff < 0.05;
 
-                                // Date Check (Month/Year)
+                                // Date Check
                                 const reqDate = new Date(r.date);
                                 const isDateMatch = reqDate.getMonth() === invDate.getMonth() && reqDate.getFullYear() === invDate.getFullYear();
 
-                                // Merchant "Google"
-                                const isMerchantMatch = r.merchant.toLowerCase().includes("google");
+                                // Merchant name
+                                const isMerchantMatch = r.merchant.toLowerCase().includes("microsoft") || r.merchant.toLowerCase().includes("azure");
 
                                 return isAmountMatch && (isDateMatch || isMerchantMatch);
                             });
 
                             if (match) {
-                                console.log(`[GoogleAds] Matched Invoice ${inv.id} to Request ${match.merchant} (${match.amount})`);
+                                console.log(`[Azure] Matched Invoice ${inv.name} to Request ${match.merchant} (${match.amount})`);
 
-                                updateProgress(`Downloading Google Ads Invoice for ${match.merchant}...`, completedSteps + currentProgressCount);
-                                try {
-                                    const base64Pdf = await downloadInvoicePdf(inv.pdfUrl, token);
+                                // Get PDF URL
+                                let pdfUrl = inv.properties.downloadUrl?.url;
+                                if (!pdfUrl) {
+                                    pdfUrl = await getInvoiceDownloadUrl(token, inv.id) || undefined;
+                                }
 
-                                    if (base64Pdf) {
-                                        // Convert base64 to Blob
-                                        const binaryString = atob(base64Pdf);
-                                        const bytes = new Uint8Array(binaryString.length);
-                                        for (let i = 0; i < binaryString.length; i++) {
-                                            bytes[i] = binaryString.charCodeAt(i);
-                                        }
-                                        const blob = new Blob([bytes], { type: "application/pdf" });
+                                if (pdfUrl) {
+                                    updateProgress(`Downloading Azure Invoice for ${match.merchant}...`, completedSteps + currentProgressCount);
 
-                                        const fileName = `GoogleAds_${match.date}_${match.merchant}_${match.amount}.pdf`;
+                                    try {
+                                        const pdfRes = await fetch(pdfUrl);
+                                        const blob = await pdfRes.blob();
+                                        const fileName = `Azure_${match.date}_${match.merchant}_${match.amount}.pdf`;
                                         const file = new File([blob], fileName, { type: "application/pdf" });
 
                                         files[match.id] = file;
@@ -329,225 +420,133 @@ export const scanEmails = async (
 
                                         matches.push({
                                             receiptId: match.id,
-                                            emailId: `google-ads-${inv.id}`,
+                                            emailId: `azure-${inv.name}`,
                                             status: "FOUND",
                                             confidence: 100,
-                                            details: "Direct Google Ads API Match",
-                                            matchedHtml: "<div>Google Ads API Match</div>"
+                                            details: "Direct Azure Billing API Match",
+                                            matchedHtml: "<div>Azure API Match</div>"
                                         });
 
-                                        console.log(`[GoogleAds] Successfully saved ${fileName}`);
-                                    } else {
-                                        console.error(`[GoogleAds] Failed to download PDF (Server returned null)`);
+                                        console.log(`[Azure] Successfully saved ${fileName}`);
+                                    } catch (err) {
+                                        console.error("[Azure] Failed to download PDF", err);
                                     }
-                                } catch (err) {
-                                    console.error("[GoogleAds] Failed to download PDF", err);
                                 }
                             }
                         }
-
                     } catch (e) {
-                        console.error(`[GoogleAds] Failed to scan customer ${customerResourceName}`, e);
+                        console.error(`[Azure] Failed to scan subscription ${sub.displayName}`, e);
                     }
                 }
             } catch (e) {
-                console.error("[GoogleAds] Scan Failed", e);
+                console.error("[Azure] Billing Scan Failed", e);
             }
-        } else {
-            console.log("[GoogleAds] Skipping scan - Missing NEXT_PUBLIC_GOOGLE_ADS_DEVELOPER_TOKEN");
         }
-    }
 
-    if (provider === "azure-ad" && token) {
-        updateProgress(`Checking Azure Billing...`, completedSteps + currentProgressCount);
-        console.log("[Scanner] checking Azure Billing API...");
-        try {
-            // Dynamic import
-            const { listSubscriptions, listInvoices, getInvoiceDownloadUrl } = await import("./azure-billing");
+        // ==========================================
+        // Meta (Facebook) Ads API Scan
+        // ==========================================
+        if (provider === "facebook" && token) {
+            updateProgress(`Checking Meta Ads...`, completedSteps + currentProgressCount);
+            console.log("[Scanner] checking Meta Ads API...");
+            try {
+                const { listAdAccounts, listAdAccountTransactions, downloadMetaFile } = await import("./meta-ads");
 
-            const subs = await listSubscriptions(token);
-            console.log(`[Azure] Found ${subs.length} subscriptions`);
+                const accounts = await listAdAccounts(token);
+                console.log(`[Meta] Found ${accounts.length} ad accounts`);
 
-            for (const sub of subs) {
-                if (sub.state !== 'Enabled') continue;
+                for (const account of accounts) {
+                    try {
+                        // Transactions often contain invoice IDs and amounts
+                        const transactions = await listAdAccountTransactions(token, account.id);
+                        console.log(`[Meta] Found ${transactions.length} transactions for ${account.name}`);
 
-                try {
-                    const invoices = await listInvoices(token, sub.subscriptionId);
-                    console.log(`[Azure] Found ${invoices.length} invoices for ${sub.displayName}`);
+                        for (const tx of transactions) {
+                            const txAmount = Math.abs(parseFloat(tx.amount?.amount || "0"));
+                            const txDate = new Date(tx.time * 1000);
 
-                    for (const inv of invoices) {
-                        // Try to match this invoice to a Request
-                        const invAmount = inv.properties.grandTotal?.amount || 0;
-                        const invDate = new Date(inv.properties.invoicePeriodEndDate);
+                            const match = requests.find(r => {
+                                if (files[r.id]) return false;
 
-                        const match = requests.find(r => {
-                            if (files[r.id]) return false;
+                                // Amount Check
+                                const diff = Math.abs(r.amount - txAmount);
+                                const isAmountMatch = diff < 0.05;
 
-                            // Amount Check
-                            const diff = Math.abs(r.amount - invAmount);
-                            const isAmountMatch = diff < 0.05;
+                                // Date Check (Month/Year)
+                                const reqDate = new Date(r.date);
+                                const isDateMatch = reqDate.getMonth() === txDate.getMonth() && reqDate.getFullYear() === txDate.getFullYear();
 
-                            // Date Check
-                            const reqDate = new Date(r.date);
-                            const isDateMatch = reqDate.getMonth() === invDate.getMonth() && reqDate.getFullYear() === invDate.getFullYear();
+                                // Merchant "Facebook" or "Meta"
+                                const isMerchantMatch = r.merchant.toLowerCase().includes("facebook") || r.merchant.toLowerCase().includes("meta");
 
-                            // Merchant name
-                            const isMerchantMatch = r.merchant.toLowerCase().includes("microsoft") || r.merchant.toLowerCase().includes("azure");
-
-                            return isAmountMatch && (isDateMatch || isMerchantMatch);
-                        });
-
-                        if (match) {
-                            console.log(`[Azure] Matched Invoice ${inv.name} to Request ${match.merchant} (${match.amount})`);
-
-                            // Get PDF URL
-                            let pdfUrl = inv.properties.downloadUrl?.url;
-                            if (!pdfUrl) {
-                                pdfUrl = await getInvoiceDownloadUrl(token, inv.id) || undefined;
-                            }
-
-                            if (pdfUrl) {
-                                updateProgress(`Downloading Azure Invoice for ${match.merchant}...`, completedSteps + currentProgressCount);
-
-                                try {
-                                    const pdfRes = await fetch(pdfUrl);
-                                    const blob = await pdfRes.blob();
-                                    const fileName = `Azure_${match.date}_${match.merchant}_${match.amount}.pdf`;
-                                    const file = new File([blob], fileName, { type: "application/pdf" });
-
-                                    files[match.id] = file;
-                                    foundCount++;
-                                    pdfCount++;
-
-                                    matches.push({
-                                        receiptId: match.id,
-                                        emailId: `azure-${inv.name}`,
-                                        status: "FOUND",
-                                        confidence: 100,
-                                        details: "Direct Azure Billing API Match",
-                                        matchedHtml: "<div>Azure API Match</div>"
-                                    });
-
-                                    console.log(`[Azure] Successfully saved ${fileName}`);
-                                } catch (err) {
-                                    console.error("[Azure] Failed to download PDF", err);
-                                }
-                            }
-                        }
-                    }
-                } catch (e) {
-                    console.error(`[Azure] Failed to scan subscription ${sub.displayName}`, e);
-                }
-            }
-        } catch (e) {
-            console.error("[Azure] Billing Scan Failed", e);
-        }
-    }
-
-    // ==========================================
-    // Meta (Facebook) Ads API Scan
-    // ==========================================
-    if (provider === "facebook" && token) {
-        updateProgress(`Checking Meta Ads...`, completedSteps + currentProgressCount);
-        console.log("[Scanner] checking Meta Ads API...");
-        try {
-            const { listAdAccounts, listAdAccountTransactions, downloadMetaFile } = await import("./meta-ads");
-
-            const accounts = await listAdAccounts(token);
-            console.log(`[Meta] Found ${accounts.length} ad accounts`);
-
-            for (const account of accounts) {
-                try {
-                    // Transactions often contain invoice IDs and amounts
-                    const transactions = await listAdAccountTransactions(token, account.id);
-                    console.log(`[Meta] Found ${transactions.length} transactions for ${account.name}`);
-
-                    for (const tx of transactions) {
-                        const txAmount = Math.abs(parseFloat(tx.amount?.amount || "0"));
-                        const txDate = new Date(tx.time * 1000);
-
-                        const match = requests.find(r => {
-                            if (files[r.id]) return false;
-
-                            // Amount Check
-                            const diff = Math.abs(r.amount - txAmount);
-                            const isAmountMatch = diff < 0.05;
-
-                            // Date Check (Month/Year)
-                            const reqDate = new Date(r.date);
-                            const isDateMatch = reqDate.getMonth() === txDate.getMonth() && reqDate.getFullYear() === txDate.getFullYear();
-
-                            // Merchant "Facebook" or "Meta"
-                            const isMerchantMatch = r.merchant.toLowerCase().includes("facebook") || r.merchant.toLowerCase().includes("meta");
-
-                            return isAmountMatch && (isDateMatch || isMerchantMatch);
-                        });
-
-                        if (match) {
-                            console.log(`[Meta] Matched Transaction ${tx.id} to Request ${match.merchant} (${match.amount})`);
-
-                            // Meta rarely gives a direct PDF URL for transactions via API, 
-                            // but if it does (not in current transactions fields but maybe invoices)
-                            // For now, we report the match. If we find a way to get the PDF, we'll download it.
-
-                            matches.push({
-                                receiptId: match.id,
-                                emailId: `meta-${tx.id}`,
-                                status: "FOUND",
-                                confidence: 100,
-                                details: `Direct Meta Ads API Match (ID: ${tx.id})`,
-                                matchedHtml: `<div>Meta Transaction Match: ${tx.billing_reason || 'Billing'}</div>`
+                                return isAmountMatch && (isDateMatch || isMerchantMatch);
                             });
 
-                            // Note: pdfCount won't increment unless we find a download_uri
+                            if (match) {
+                                console.log(`[Meta] Matched Transaction ${tx.id} to Request ${match.merchant} (${match.amount})`);
+
+                                // Meta rarely gives a direct PDF URL for transactions via API, 
+                                // but if it does (not in current transactions fields but maybe invoices)
+                                // For now, we report the match. If we find a way to get the PDF, we'll download it.
+
+                                matches.push({
+                                    receiptId: match.id,
+                                    emailId: `meta-${tx.id}`,
+                                    status: "FOUND",
+                                    confidence: 100,
+                                    details: `Direct Meta Ads API Match (ID: ${tx.id})`,
+                                    matchedHtml: `<div>Meta Transaction Match: ${tx.billing_reason || 'Billing'}</div>`
+                                });
+
+                                // Note: pdfCount won't increment unless we find a download_uri
+                            }
                         }
+                    } catch (e) {
+                        console.error(`[Meta] Failed to scan ad account ${account.name}`, e);
                     }
-                } catch (e) {
-                    console.error(`[Meta] Failed to scan ad account ${account.name}`, e);
                 }
+            } catch (e) {
+                console.error("[Meta] Scan Failed", e);
             }
-        } catch (e) {
-            console.error("[Meta] Scan Failed", e);
+        }
+
+        // Attach session info to candidates for later fetching
+        if (provider && token) {
+            sessionCandidates = sessionCandidates.map(c => ({
+                ...c,
+                provider: provider as any,
+                accessToken: token
+            }));
+        }
+
+        allCandidates = [...allCandidates, ...sessionCandidates];
+
+        // Session done, add full requests length to completedSteps
+        completedSteps += requests.length;
+    }
+
+    // Deduplicate candidates by ID across all sessions
+    const candidates = Array.from(new Map(allCandidates.map(c => [c.id, c])).values());
+
+    updateProgress(`Analyzing ${candidates.length} emails found...`);
+
+    // Final check for missing items (stream didn't find them)
+    for (const req of requests) {
+        if (!files[req.id]) {
+            // Check if we have a match in matches array?
+            const existingMatch = matches.find(m => m.receiptId === req.id);
+            if (!existingMatch) {
+                matches.push({
+                    receiptId: req.id,
+                    emailId: "",
+                    status: "NOT_FOUND",
+                    confidence: 0,
+                    details: "No matching email found"
+                });
+            }
         }
     }
 
-    // Attach session info to candidates for later fetching
-    if (provider && token) {
-        sessionCandidates = sessionCandidates.map(c => ({
-            ...c,
-            provider: provider as any,
-            accessToken: token
-        }));
-    }
-
-    allCandidates = [...allCandidates, ...sessionCandidates];
-
-    // Session done, add full requests length to completedSteps
-    completedSteps += requests.length;
-}
-
-// Deduplicate candidates by ID across all sessions
-const candidates = Array.from(new Map(allCandidates.map(c => [c.id, c])).values());
-
-updateProgress(`Analyzing ${candidates.length} emails found...`);
-
-// Final check for missing items (stream didn't find them)
-for (const req of requests) {
-    if (!files[req.id]) {
-        // Check if we have a match in matches array?
-        const existingMatch = matches.find(m => m.receiptId === req.id);
-        if (!existingMatch) {
-            matches.push({
-                receiptId: req.id,
-                emailId: "",
-                status: "NOT_FOUND",
-                confidence: 0,
-                details: "No matching email found"
-            });
-        }
-    }
-}
-
-onProgress?.("Finalizing results...", 100, foundCount, pdfCount);
-return { matches, candidates, files };
+    onProgress?.("Finalizing results...", 100, foundCount, pdfCount);
+    return { matches, candidates, files };
 };
