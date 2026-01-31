@@ -131,7 +131,24 @@ export const matchReceipt = (request: ReceiptRequest, email: EmailCandidate): Ma
         }
     }
 
-    // C. Domain Match (Boosting +35)
+    // C. Microsoft / Invoice ID Match (Golden Key +100)
+    // Microsoft often includes the Invoice ID in the merchant string: "Microsoft-G092604318"
+    const msIdMatch = request.merchant.match(/G\d{10,12}/);
+    if (msIdMatch) {
+        const invoiceId = msIdMatch[0];
+        console.log(`[Matcher] Looking for Invoice ID: ${invoiceId}`);
+
+        // Check Subject or Filename
+        const idInSubject = email.subject.includes(invoiceId);
+        const idInFilename = email.attachments.some(a => a.name.includes(invoiceId));
+
+        if (idInSubject || idInFilename) {
+            bonusScore += 100; // GUARANTEED MATCH
+            detailsParts.push(`Invoice ID Match (${invoiceId})`);
+        }
+    }
+
+    // D. Domain Match (Boosting +35)
     // High trust signal
     if (rule?.domains) {
         if (rule.domains.some(d => senderLower.includes(d))) {
@@ -256,10 +273,10 @@ export function matchReceiptByContent(text: string, request: ReceiptRequest): Co
     }
 
     if (!amountFound) {
-        // PENALTY: If we didn't find the amount, it's risky to accept it purely on keywords.
-        // Especially for companies like Google/Facebook that send many receipts.
-        score -= 25;
-        details.push(`Amount NOT found (${request.amount}) [-25]`);
+        // PENALTY: Validating amount is critical for automated receipts.
+        // If we can't find the money, we can't trust the match.
+        score -= 60;
+        details.push(`Amount NOT found (${request.amount}) [-60]`);
     }
 
     // --- 2. Merchant & Keyword Scoring (Max 20) ---
