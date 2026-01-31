@@ -18,12 +18,13 @@ interface ResultsTableProps {
     receipts: ReceiptRequest[];
     matches: MatchResult[];
     autoFoundFiles?: Record<string, File>;
+    activeBatchId?: string | null;
     onExport: (manualFiles: Record<string, File>) => void;
     onRestart: () => void;
     onAddInbox?: () => void;
 }
 
-export const ResultsTable = ({ receipts, matches, autoFoundFiles, onExport, onRestart, onAddInbox }: ResultsTableProps) => {
+export const ResultsTable = ({ receipts, matches, autoFoundFiles, activeBatchId, onExport, onRestart, onAddInbox }: ResultsTableProps) => {
     const { data: session } = useSession();
     const [manualFiles, setManualFiles] = React.useState<Record<string, File>>({});
     const [previewId, setPreviewId] = React.useState<string | null>(null);
@@ -556,6 +557,7 @@ export const ResultsTable = ({ receipts, matches, autoFoundFiles, onExport, onRe
                 <ShareModal
                     isOpen={showShareModal}
                     onClose={() => setShowShareModal(false)}
+                    batchId={activeBatchId || undefined}
                 />
             )}
 

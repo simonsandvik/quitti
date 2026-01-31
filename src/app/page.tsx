@@ -397,6 +397,7 @@ export default function Home() {
               receipts={receipts}
               matches={matches}
               autoFoundFiles={autoFoundFiles}
+              activeBatchId={activeBatchId}
               onExport={handleExportClick}
               onRestart={handleRestart}
               onAddInbox={() => setStep("connect")}
