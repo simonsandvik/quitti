@@ -6,23 +6,23 @@ import { useRef } from "react";
 const steps = [
     {
         number: "01",
-        title: "Link Your Email",
-        description: "Securely connect your Gmail or Outlook. We use official APIs and OAuth2, so we never see your password."
+        title: "Team Onboarding",
+        description: "Invite your team and connect your Google or Microsoft inboxes securely via official APIs."
     },
     {
         number: "02",
-        title: "We Scan",
-        description: "Our system scans your inbox for receipts and matches them to your bank transactions with high accuracy."
+        title: "Automated Scan",
+        description: "Our system scans every connected inbox and matches receipts to your bank transactions with high accuracy."
     },
     {
         number: "03",
-        title: "Add Non-Email Receipts",
-        description: "Easily bulk-upload paper receipts or invoices from other sources to complete your monthly documentation."
+        title: "Team Sync",
+        description: "Review matches together. Anyone can bulk-upload missing paper receipts or missing invoices manually."
     },
     {
         number: "04",
-        title: "Audit-Ready Export",
-        description: "Get a tidy ZIP file with all your receipts renamed (Date_Merchant_Amount) and ready for your accountant."
+        title: "Instant Handover",
+        description: "Send a secure, read-only link to your bookkeeper. They get a tidy, audit-ready dashboard in one click."
     }
 ];
 

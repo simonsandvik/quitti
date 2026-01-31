@@ -4,11 +4,11 @@ import { motion } from "framer-motion";
 
 const props = [
     {
-        title: "Instant Link",
-        description: "Securely link your Gmail and Outlook accounts in seconds. We use standard OAuth2, so we never see your password.",
+        title: "Collaborative Teams",
+        description: "Invite your team members to sync their receipts into one unified dashboard. Perfect for growing companies and busy offices.",
         icon: (
             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
             </svg>
         ),
     },
@@ -22,11 +22,12 @@ const props = [
         ),
     },
     {
-        title: "The Perfect Handover",
-        description: "Download a ZIP file with all receipts named consistently (Date_Merchant_Amount). Your bookkeeper will love you.",
+        title: "Bookkeeper Portal",
+        description: "Generate a secure, read-only link for your accountant. They get instant access to all receipts and audit-ready files.",
         icon: (
             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.828 14.828a4 4 0 015.656 0l4 4a4 4 0 01-5.656 5.656l-1.101-1.101" />
             </svg>
         ),
     },

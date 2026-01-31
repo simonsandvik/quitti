@@ -37,18 +37,18 @@ export const LandingHero = ({ onStart, onDemo }: LandingHeroProps) => {
                                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                                 <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
                             </span>
-                            Built for busy executives
+                            Now with Team Collaboration
                         </motion.div>
 
                         <h1 className="text-5xl md:text-7xl font-extrabold text-slate-900 leading-[1.05] tracking-tight mb-8">
                             Quit Chasing <br />
                             <span className="bg-gradient-to-r from-emerald-600 via-emerald-500 to-cyan-500 bg-clip-text text-transparent italic">
-                                Receipts.
+                                Team Receipts.
                             </span>
                         </h1>
 
                         <p className="text-xl text-slate-600 mb-12 max-w-xl leading-relaxed lg:mx-0 mx-auto">
-                            Quitti helps you quit chasing missing receipts. Securely scan your Google and Microsoft inboxes. No more manual searching.
+                            Quitti helps you and your team find every missing receipt. Securely scan inboxes, sync shared batches, and provide instant access to your bookkeeper.
                         </p>
 
                         <div className="flex flex-col sm:flex-row gap-5 justify-center lg:justify-start">
@@ -58,7 +58,7 @@ export const LandingHero = ({ onStart, onDemo }: LandingHeroProps) => {
                                 className="px-10 py-7 text-lg rounded-2xl bg-emerald-500 hover:bg-emerald-600 shadow-xl shadow-emerald-500/20 transition-all active:scale-95"
                                 onClick={onStart}
                             >
-                                Find My Receipts
+                                Start Team Scan
                             </Button>
                             <button
                                 className="px-10 py-7 text-lg font-bold text-slate-600 hover:text-slate-900 transition-colors flex items-center gap-2 justify-center"
@@ -76,7 +76,7 @@ export const LandingHero = ({ onStart, onDemo }: LandingHeroProps) => {
                                 <span className="text-emerald-500">✓</span> Pay only for results
                             </div>
                             <div className="flex items-center gap-2">
-                                <span className="text-emerald-500">✓</span> Secure & Read-only
+                                <span className="text-emerald-500">✓</span> Team & Accountant Ready
                             </div>
                         </div>
                     </motion.div>
