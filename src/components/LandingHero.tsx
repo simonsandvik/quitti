@@ -42,7 +42,7 @@ export const LandingHero = ({ onStart, onDemo }: LandingHeroProps) => {
 
                         <h1 className="text-5xl md:text-7xl font-extrabold text-slate-900 leading-[1.05] tracking-tight mb-8">
                             Quit Chasing <br />
-                            <span className="bg-gradient-to-r from-emerald-600 via-emerald-500 to-cyan-500 bg-clip-text text-transparent italic">
+                            <span className="bg-gradient-to-r from-emerald-600 via-emerald-500 to-cyan-500 bg-clip-text text-transparent italic whitespace-nowrap">
                                 Missing Receipts.
                             </span>
                         </h1>
