@@ -22,6 +22,7 @@ export interface MatchResult {
     confidence: number;
     details: string;
     matchedHtml?: string; // Stored HTML from email candidate
+    storagePath?: string; // Cloud bucket path for matched file
 }
 
 /**
@@ -174,19 +175,24 @@ export const matchReceipt = (request: ReceiptRequest, email: EmailCandidate): Ma
 
 
     // --- 3. Attachment Check (Max 20) ---
-    // STRICT MODE: Must have attachment
-    if (!email.hasAttachments || email.attachments.length === 0) {
+    // STRICT MODE: Must have PDF attachment (User Request for MVP)
+    const hasPdf = email.attachments.some(a =>
+        a.type.toLowerCase().includes("pdf") ||
+        a.name.toLowerCase().endsWith(".pdf")
+    );
+
+    if (!hasPdf) {
         return {
             receiptId: request.id,
             emailId: email.id,
             status: "NOT_FOUND",
             confidence: 0,
-            details: "Skipped: No attachments",
+            details: "Skipped: No PDF attachment",
             matchedHtml: undefined
         };
     }
     score += 20;
-    detailsParts.push("Has Attachment");
+    detailsParts.push("Has PDF Attachment");
 
 
     // --- 4. Final Status Determination ---
@@ -250,7 +256,10 @@ export function matchReceiptByContent(text: string, request: ReceiptRequest): Co
     }
 
     if (!amountFound) {
-        details.push(`Amount NOT found (${request.amount})`);
+        // PENALTY: If we didn't find the amount, it's risky to accept it purely on keywords.
+        // Especially for companies like Google/Facebook that send many receipts.
+        score -= 25;
+        details.push(`Amount NOT found (${request.amount}) [-25]`);
     }
 
     // --- 2. Merchant & Keyword Scoring (Max 20) ---

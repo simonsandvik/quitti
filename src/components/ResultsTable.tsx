@@ -7,8 +7,12 @@ import { Card } from "./ui/Card";
 import { MatchResult } from "@/lib/matcher";
 import { ReceiptRequest } from "@/lib/parser";
 import { getMerchantHierarchy } from "@/lib/grouping";
+import { uploadReceiptFile, updateMatchResult } from "@/lib/supabase";
+import { useSession } from "next-auth/react";
 import { StatusBadge } from "./StatusBadge";
 import { MerchantGroup } from "./MerchantGroup";
+import { ShareModal } from "./ShareModal";
+import { TeamSettingsModal } from "./TeamSettingsModal";
 
 interface ResultsTableProps {
     receipts: ReceiptRequest[];
@@ -20,8 +24,11 @@ interface ResultsTableProps {
 }
 
 export const ResultsTable = ({ receipts, matches, autoFoundFiles, onExport, onRestart, onAddInbox }: ResultsTableProps) => {
+    const { data: session } = useSession();
     const [manualFiles, setManualFiles] = React.useState<Record<string, File>>({});
     const [previewId, setPreviewId] = React.useState<string | null>(null);
+    const [showShareModal, setShowShareModal] = React.useState(false);
+    const [showTeamModal, setShowTeamModal] = React.useState(false);
 
     // Sync auto-found files into manualFiles state
     React.useEffect(() => {
@@ -97,9 +104,30 @@ export const ResultsTable = ({ receipts, matches, autoFoundFiles, onExport, onRe
         setExpandedGroups(next);
     };
 
+    const uploadAndSave = async (receiptId: string, file: File) => {
+        if (!session?.user) return;
+        const userId = (session.user as any).id;
+        try {
+            console.log(`[Cloud] Uploading receipt ${receiptId}...`);
+            const path = await uploadReceiptFile(userId, receiptId, file);
+            await updateMatchResult(receiptId, {
+                receiptId,
+                emailId: "manual", // Mock emailId for manual uplaod
+                status: "FOUND",
+                confidence: 100, // Manual match is 100%
+                details: `Manual Upload (Drag & Drop) - ${file.name}`
+            }, userId, path);
+            console.log(`[Cloud] Upload complete: ${path}`);
+        } catch (e) {
+            console.error("Failed to upload receipt", e);
+        }
+    };
+
     const handleFileChange = (receiptId: string, file: File | null) => {
         if (file) {
             setManualFiles(prev => ({ ...prev, [receiptId]: file }));
+            // Trigger background upload
+            uploadAndSave(receiptId, file);
         } else {
             setManualFiles(prev => {
                 const next = { ...prev };
@@ -169,9 +197,16 @@ export const ResultsTable = ({ receipts, matches, autoFoundFiles, onExport, onRe
 
         setManualFiles(newFiles);
         setUnmatchedFiles(newUnmatched);
+
+        // Background upload all new matches
+        Object.entries(newFiles).forEach(([id, file]) => {
+            if (!manualFiles[id]) { // Only upload if it wasn't there before
+                uploadAndSave(id, file);
+            }
+        });
+
         setIsScanning(false);
     };
-
     // Active receipts are those NOT marked missing
     const activeReceipts = receipts.filter(r => !missingIds.has(r.id));
     const missingReceiptsList = receipts.filter(r => missingIds.has(r.id));
@@ -229,6 +264,9 @@ export const ResultsTable = ({ receipts, matches, autoFoundFiles, onExport, onRe
                     </div>
                     <Button variant="primary" onClick={() => onExport(manualFiles)} className="bg-emerald-500 hover:bg-emerald-600 text-white shadow-xl shadow-emerald-500/20 px-6 py-2 h-auto border-0 rounded-xl">
                         Download Finished ZIP
+                    </Button>
+                    <Button variant="secondary" onClick={() => setShowShareModal(true)} className="bg-white hover:bg-slate-50 text-emerald-600 border border-emerald-100 shadow-sm px-4 py-2 h-auto rounded-xl">
+                        Share w/ Bookkeeper
                     </Button>
                 </div>
             </div>
@@ -513,6 +551,20 @@ export const ResultsTable = ({ receipts, matches, autoFoundFiles, onExport, onRe
                     </motion.div>
                 )}
             </AnimatePresence>
+
+            {showShareModal && (
+                <ShareModal
+                    isOpen={showShareModal}
+                    onClose={() => setShowShareModal(false)}
+                />
+            )}
+
+            {showTeamModal && (
+                <TeamSettingsModal
+                    isOpen={showTeamModal}
+                    onClose={() => setShowTeamModal(false)}
+                />
+            )}
         </motion.div>
     );
 };

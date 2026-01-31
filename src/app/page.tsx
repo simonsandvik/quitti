@@ -244,7 +244,8 @@ export default function Home() {
           if (pct !== undefined) setSearchProgress(pct);
           if (found !== undefined) setFoundCount(found);
           if (pdfs !== undefined) setPdfCount(pdfs);
-        }
+        },
+        (status === "authenticated" && (session?.user as any)?.id) ? (session.user as any).id : undefined
       );
       setMatches(scanMatches);
       setAutoFoundFiles(scanFiles || {});
@@ -255,7 +256,7 @@ export default function Home() {
           for (const match of scanMatches) {
             if (match.status === "FOUND" || match.status === "POSSIBLE") {
               // @ts-ignore
-              await updateMatchResult(match.receiptId, match, (session.user as any).id);
+              await updateMatchResult(match.receiptId, match, (session.user as any).id, match.storagePath);
             }
           }
         } catch (error) {
