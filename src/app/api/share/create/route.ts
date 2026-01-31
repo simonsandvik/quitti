@@ -1,6 +1,6 @@
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { supabase } from "@/lib/supabase";
+import { getSupabaseAdmin } from "@/lib/supabase";
 import { nanoid } from "nanoid";
 import { NextResponse } from "next/server";
 
@@ -20,7 +20,8 @@ export async function POST(req: Request) {
 
         // Create the share record
         // We link it to the user_id (sharing their data) and optionally a specific batch
-        const { data, error } = await supabase
+        const admin = getSupabaseAdmin();
+        const { data, error } = await admin
             .from("report_shares")
             .insert({
                 user_id: userId,
