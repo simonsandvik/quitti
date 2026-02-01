@@ -170,8 +170,16 @@ export const scanEmails = async (
                                                     console.log(`[Content Verify] OVERRIDE: Accepting file despite PDF content mismatch due to High Confidence Metadata Match (${result.confidence})`);
                                                     isValid = true;
                                                 } else {
-                                                    // STRICT MODE: Discard if content doesn't match and metadata wasn't overwhelming
-                                                    isValid = false;
+                                                    // STRICT CHECK: If we extracted text successfully (>50 chars) but failed to match, it's a BAD match
+                                                    if (verification.extractedText && verification.extractedText.length > 50) {
+                                                        console.log(`[Content Verify] REJECTING: Valid text found but amount/content mismatch. False Positive prevented.`);
+                                                        isValid = false;
+                                                    } else {
+                                                        // Text extraction likely failed (OCR issue or image-only PDF not OCR'd yet)
+                                                        // We trust the metadata if verification couldn't prove otherwise
+                                                        console.log(`[Content Verify] WARNING: Low text extraction. Trusting metadata match due to lack of evidence.`);
+                                                        isValid = true;
+                                                    }
                                                 }
                                             }
                                         } catch (err) {

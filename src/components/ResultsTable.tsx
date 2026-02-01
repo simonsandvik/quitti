@@ -42,7 +42,7 @@ export const ResultsTable = ({ receipts, matches, autoFoundFiles, activeBatchId,
 
     const [unmatchedFiles, setUnmatchedFiles] = React.useState<File[]>([]);
     const [isScanning, setIsScanning] = React.useState(false);
-    const [confirmation, setConfirmation] = React.useState<{ type: 'MISSING' | 'REMOVE', id: string, title: string, message: string } | null>(null);
+    const [confirmation, setConfirmation] = React.useState<{ type: 'MISSING' | 'REMOVE' | 'MISMATCH', id: string, title: string, message: string, file?: File } | null>(null);
 
     const requestToggleMissing = (id: string) => {
         const isCurrentlyMissing = missingIds.has(id);
@@ -87,6 +87,9 @@ export const ResultsTable = ({ receipts, matches, autoFoundFiles, activeBatchId,
                 delete next[id];
                 return next;
             });
+        } else if (type === 'MISMATCH' && confirmation.file) {
+            setManualFiles(prev => ({ ...prev, [id]: confirmation.file! }));
+            uploadAndSave(id, confirmation.file!);
         }
         setConfirmation(null);
     };
@@ -124,8 +127,45 @@ export const ResultsTable = ({ receipts, matches, autoFoundFiles, activeBatchId,
         }
     };
 
-    const handleFileChange = (receiptId: string, file: File | null) => {
+    const handleFileChange = async (receiptId: string, file: File | null) => {
         if (file) {
+            // VALIDATION STEP: Check if the manually uploaded file matches the receipt request
+            const req = receipts.find(r => r.id === receiptId);
+            if (req) {
+                try {
+                    const isPdf = file.name.toLowerCase().endsWith('.pdf');
+                    // Only validate PDFs for now (images require OCR which is heavier/slower)
+                    if (isPdf) {
+                        const { extractTextFromPdf } = await import("@/lib/pdf-reader");
+                        const { matchReceiptByContent } = await import("@/lib/matcher");
+
+                        const text = await extractTextFromPdf(file);
+                        const { score, details } = matchReceiptByContent(text, req);
+
+                        // Threshold: 45 is "POSSIBLE", usually implies Amount Fuzzy or Merchant Match.
+                        // If < 45, it likely missed the amount entirely.
+                        // Specifically check if details has "Amount NOT found"
+                        const isMismatch = score < 45 || details.some(d => d.includes("Amount NOT found") || d.includes("[-60]"));
+
+                        if (isMismatch) {
+                            console.warn(`[Manual Validation] Mismatch detected for ${req.merchant}. Score: ${score}`, details);
+                            setConfirmation({
+                                type: 'MISMATCH',
+                                id: receiptId,
+                                title: '⚠️ Mismatch Detected',
+                                message: `The uploaded file doesn't seem to match this receipt (Amount: ${req.amount} ${req.currency}).\n\nMatcher found: ${details.join(", ")}.\n\nAre you sure you want to force assign this file?`,
+                                file: file
+                            });
+                            return; // Stop here, wait for confirmation
+                        }
+                    }
+                } catch (e) {
+                    console.error("Validation failed", e);
+                    // If validation errors (e.g. password protected PDF), we verify let it pass but maybe warn?
+                    // For now, let it pass to avoid blocking user.
+                }
+            }
+
             setManualFiles(prev => ({ ...prev, [receiptId]: file }));
             // Trigger background upload
             uploadAndSave(receiptId, file);
