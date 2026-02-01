@@ -245,6 +245,7 @@ export function matchReceiptByContent(text: string, request: ReceiptRequest): Co
     const amountRegex = /(?:[\$€£¥]|USD|EUR|GBP|SEK|NOK|DKK)?\s*(\d{1,3}(?:[\s,]\d{3})*(?:[.,]\d{2}))(?![0-9])/gi;
     const matches = normText.matchAll(amountRegex);
     let amountFound = false;
+    const allAmountsFound: number[] = [];
 
     for (const match of matches) {
         const rawAmount = match[1]
@@ -254,6 +255,7 @@ export function matchReceiptByContent(text: string, request: ReceiptRequest): Co
 
         const parsedAmount = parseFloat(rawAmount);
         if (!isNaN(parsedAmount) && parsedAmount > 0) {
+            allAmountsFound.push(parsedAmount);
             const diff = Math.abs(parsedAmount - request.amount) / request.amount;
 
             // Exact Amount (+70)
@@ -340,6 +342,7 @@ export function matchReceiptByContent(text: string, request: ReceiptRequest): Co
         score,
         details,
         foundAmount,
+        allAmountsFound: allAmountsFound, // Expose all amounts found for Hard Mismatch check
         matches: {
             amount: score >= 40 && amountFound, // 40 is fuzzy amount threshold
             merchant: merchantScore > 0,
@@ -352,6 +355,7 @@ export interface ContentMatchScore {
     score: number;
     details: string[];
     foundAmount?: number;
+    allAmountsFound?: number[];
     matches: {
         amount: boolean;
         merchant: boolean;

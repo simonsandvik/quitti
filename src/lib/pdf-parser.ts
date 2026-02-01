@@ -12,6 +12,7 @@ export interface PdfContentMatch {
     confidence: number;
     details: string[];
     extractedText: string;
+    hasHardAmountMismatch?: boolean;
 }
 
 export const parsePdfContent = async (buffer: Uint8Array | Buffer): Promise<string> => {
@@ -56,17 +57,23 @@ export const verifyPdfMatch = async (buffer: Uint8Array | Buffer, request: Recei
     const text = await parsePdfContent(buffer);
 
     // Use centralized "Ultimate" matching logic
-    const { score, details } = matchReceiptByContent(text, request);
+    const { score, details, allAmountsFound } = matchReceiptByContent(text, request);
 
     // Accept if Score >= 50
     // (Exact Amount = 50 -> Match)
     // (Fuzzy Amount 30 + Keyword 25 = 55 -> Match)
     const isMatch = score >= 50;
 
+    // Detect Hard Mismatch: We found amounts, but none were close to correct.
+    // If allAmountsFound is empty, it means OCR failed or text extraction failed (Soft Mismatch).
+    // If allAmountsFound has values, but isMatch is false, it's a Hard Mismatch.
+    const hasHardAmountMismatch = !isMatch && (allAmountsFound && allAmountsFound.length > 0);
+
     return {
         isMatch,
         confidence: score,
         details,
-        extractedText: text
+        extractedText: text,
+        hasHardAmountMismatch
     };
 };

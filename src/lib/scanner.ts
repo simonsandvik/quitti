@@ -165,18 +165,20 @@ export const scanEmails = async (
                                                 console.warn(`[Content Verify] PDF Mismatch for ${req.merchant}. extracted text did not contain strong signals. Details: ${verification.details.join(", ")}`);
 
                                                 // METADATA OVERRIDE: Accept if email metadata was a very strong match (e.g. Exact Date + Strong Merchant)
-                                                // This handles scanned PDFs (images) where text extraction fails but we are sure it's the right email.
-                                                if (result.confidence > 85) {
-                                                    console.log(`[Content Verify] OVERRIDE: Accepting file despite PDF content mismatch due to High Confidence Metadata Match (${result.confidence})`);
+                                                // BUT REJECT if we found a Hard Amount Mismatch (e.g. Found 6.00 but needed 500.00)
+                                                if (result.confidence > 85 && !verification.hasHardAmountMismatch) {
+                                                    console.log(`[Content Verify] OVERRIDE: Accepting file despite PDF content mismatch due to High Confidence Metadata Match (${result.confidence}). (No hard mismatch detected)`);
                                                     isValid = true;
+                                                } else if (verification.hasHardAmountMismatch) {
+                                                    console.log(`[Content Verify] REJECTING: Hard Amount Mismatch detected. Metadata confidence (${result.confidence}) overridden by content failure.`);
+                                                    isValid = false;
                                                 } else {
                                                     // STRICT CHECK: If we extracted text successfully (>50 chars) but failed to match, it's a BAD match
                                                     if (verification.extractedText && verification.extractedText.length > 50) {
-                                                        console.log(`[Content Verify] REJECTING: Valid text found but amount/content mismatch. False Positive prevented.`);
+                                                        console.log(`[Content Verify] REJECTING: Valid text found but content mismatch. False Positive prevented.`);
                                                         isValid = false;
                                                     } else {
-                                                        // Text extraction likely failed (OCR issue or image-only PDF not OCR'd yet)
-                                                        // We trust the metadata if verification couldn't prove otherwise
+                                                        // Text extraction likely failed or PDF is image-only
                                                         console.log(`[Content Verify] WARNING: Low text extraction. Trusting metadata match due to lack of evidence.`);
                                                         isValid = true;
                                                     }
