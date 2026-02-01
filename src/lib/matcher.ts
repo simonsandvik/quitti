@@ -241,7 +241,8 @@ export function matchReceiptByContent(text: string, request: ReceiptRequest): Co
     let foundAmount: number | undefined;
 
     // --- 1. Amount Scoring (Max 50) ---
-    const tolerance = 0.20;
+    // STRICTER TOLERANCE: 5% (Prevent 83 EUR matching 95 EUR)
+    const tolerance = 0.05;
     const amountRegex = /(?:[\$€£¥]|USD|EUR|GBP|SEK|NOK|DKK)?\s*(\d{1,3}(?:[\s,]\d{3})*(?:[.,]\d{2}))(?![0-9])/gi;
     const matches = normText.matchAll(amountRegex);
     let amountFound = false;
@@ -266,11 +267,11 @@ export function matchReceiptByContent(text: string, request: ReceiptRequest): Co
                 details.push(`Amount Exact Match (${parsedAmount})`);
                 break;
             }
-            // Fuzzy Amount (+40)
+            // Fuzzy Amount (+35) - Reduced score so it requires other signals
             else if (diff <= tolerance) {
                 if (!amountFound) {
                     amountFound = true;
-                    score += 40;
+                    score += 35; // Lowered from 40 to prevent Date (10) + Fuzzy (35) = 45 < 50
                     foundAmount = parsedAmount;
                     details.push(`Amount Fuzzy Match (${parsedAmount})`);
                 }
