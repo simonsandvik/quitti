@@ -42,7 +42,15 @@ export const ResultsTable = ({ receipts, matches, autoFoundFiles, activeBatchId,
 
     const [unmatchedFiles, setUnmatchedFiles] = React.useState<File[]>([]);
     const [isScanning, setIsScanning] = React.useState(false);
-    const [confirmation, setConfirmation] = React.useState<{ type: 'MISSING' | 'REMOVE' | 'MISMATCH', id: string, title: string, message: string, file?: File } | null>(null);
+    const [confirmation, setConfirmation] = React.useState<{
+        type: 'MISSING' | 'REMOVE' | 'MISMATCH',
+        id: string,
+        title: string,
+        message: string,
+        file?: File,
+        mismatchDetails?: { expected: number; found: number; currency: string },
+        matchFlags?: { amount: boolean; merchant: boolean; date: boolean }
+    } | null>(null);
 
     const requestToggleMissing = (id: string) => {
         const isCurrentlyMissing = missingIds.has(id);
@@ -140,12 +148,12 @@ export const ResultsTable = ({ receipts, matches, autoFoundFiles, activeBatchId,
                         const { matchReceiptByContent } = await import("@/lib/matcher");
 
                         const text = await extractTextFromPdf(file);
-                        const { score, details } = matchReceiptByContent(text, req);
+                        // TypeScript will pick up new interface
+                        const { score, details, foundAmount, matches } = matchReceiptByContent(text, req);
 
-                        // Threshold: 45 is "POSSIBLE", usually implies Amount Fuzzy or Merchant Match.
-                        // If < 45, it likely missed the amount entirely.
-                        // Specifically check if details has "Amount NOT found"
-                        const isMismatch = score < 45 || details.some(d => d.includes("Amount NOT found") || d.includes("[-60]"));
+                        // Check Mismatch
+                        // Note: We access the new 'matches' object from matcher.ts
+                        const isMismatch = score < 45 || (matches && !matches.amount);
 
                         if (isMismatch) {
                             console.warn(`[Manual Validation] Mismatch detected for ${req.merchant}. Score: ${score}`, details);
@@ -153,8 +161,14 @@ export const ResultsTable = ({ receipts, matches, autoFoundFiles, activeBatchId,
                                 type: 'MISMATCH',
                                 id: receiptId,
                                 title: '⚠️ Mismatch Detected',
-                                message: `The uploaded file doesn't seem to match this receipt (Amount: ${req.amount} ${req.currency}).\n\nMatcher found: ${details.join(", ")}.\n\nAre you sure you want to force assign this file?`,
-                                file: file
+                                message: `This file might be incorrect. We verified the content against the receipt details:`,
+                                file: file,
+                                mismatchDetails: {
+                                    expected: req.amount,
+                                    found: foundAmount || 0,
+                                    currency: req.currency
+                                },
+                                matchFlags: matches
                             });
                             return; // Stop here, wait for confirmation
                         }
@@ -187,6 +201,7 @@ export const ResultsTable = ({ receipts, matches, autoFoundFiles, activeBatchId,
         setUnmatchedFiles([]); // Reset unmatched for new batch
         const newFiles = { ...manualFiles };
         const newUnmatched: File[] = [];
+        let successCount = 0;
 
         // Dynamic import to avoid SSR issues
         const { extractTextFromPdf } = await import("@/lib/pdf-reader");
@@ -231,6 +246,7 @@ export const ResultsTable = ({ receipts, matches, autoFoundFiles, activeBatchId,
             // 2. Strict Match Required
             if (bestMatchId) {
                 newFiles[bestMatchId] = file;
+                successCount++;
             } else {
                 newUnmatched.push(file);
             }
@@ -247,6 +263,12 @@ export const ResultsTable = ({ receipts, matches, autoFoundFiles, activeBatchId,
         });
 
         setIsScanning(false);
+
+        // BULK REPORT
+        const unmatchedCount = newUnmatched.length;
+        if (successCount > 0 || unmatchedCount > 0) {
+            alert(`Bulk Scan Complete:\n\n✅ Matched: ${successCount} files\n⚠️ Unmatched: ${unmatchedCount} files\n\nUnmatched files are listed at the top for manual review.`);
+        }
     };
     // Active receipts are those NOT marked missing
     const activeReceipts = receipts.filter(r => !missingIds.has(r.id));
@@ -576,19 +598,44 @@ export const ResultsTable = ({ receipts, matches, autoFoundFiles, activeBatchId,
                             animate={{ scale: 1, opacity: 1, y: 0 }}
                             exit={{ scale: 0.9, opacity: 0, y: 20 }}
                         >
-                            <Card className="p-8 max-w-[400px] w-[90%] border border-slate-100 bg-white shadow-2xl relative overflow-hidden">
+                            <Card className="p-8 max-w-[420px] w-[90%] border border-slate-100 bg-white shadow-2xl relative overflow-hidden">
                                 <div className="absolute top-0 left-0 w-full h-1 bg-emerald-500/20">
                                     <motion.div
                                         initial={{ width: 0 }}
                                         animate={{ width: "100%" }}
-                                        className="h-full bg-emerald-500"
+                                        className={`h-full ${confirmation.type === 'MISMATCH' ? 'bg-amber-500' : 'bg-emerald-500'}`}
                                     />
                                 </div>
                                 <h3 className="text-lg font-bold text-slate-900 mt-0 mb-2">{confirmation.title}</h3>
                                 <p className="text-slate-500 mb-6 text-sm leading-relaxed">{confirmation.message}</p>
+
+                                {confirmation.mismatchDetails && (
+                                    <div className="mb-6 bg-slate-50 rounded-lg p-4 border border-slate-100 flex items-center justify-between gap-4">
+                                        <div className="flex flex-col">
+                                            <span className="text-[10px] uppercase font-bold text-slate-400">Expected</span>
+                                            <span className="text-lg font-bold text-slate-700">
+                                                {confirmation.mismatchDetails.expected.toFixed(2)} <span className="text-xs">{confirmation.mismatchDetails.currency}</span>
+                                            </span>
+                                        </div>
+                                        <div className="text-slate-300 text-xl">≠</div>
+                                        <div className="flex flex-col text-right">
+                                            <span className="text-[10px] uppercase font-bold text-slate-400">Found in File</span>
+                                            <span className={`text-lg font-bold ${confirmation.mismatchDetails.found === 0 ? 'text-amber-500' : 'text-red-500'}`}>
+                                                {confirmation.mismatchDetails.found > 0 ? confirmation.mismatchDetails.found.toFixed(2) : '???'} <span className="text-xs">{confirmation.mismatchDetails.currency}</span>
+                                            </span>
+                                        </div>
+                                    </div>
+                                )}
+
                                 <div className="flex gap-3 justify-end">
                                     <Button variant="secondary" onClick={cancelAction} className="border-slate-200">Cancel</Button>
-                                    <Button variant="primary" className="bg-red-500 hover:bg-red-600 border-0 shadow-lg shadow-red-500/20 rounded-xl" onClick={confirmAction}>Confirm</Button>
+                                    <Button
+                                        variant="primary"
+                                        className={`${confirmation.type === 'MISMATCH' ? 'bg-amber-500 hover:bg-amber-600 shadow-amber-500/20' : 'bg-red-500 hover:bg-red-600 shadow-red-500/20'} border-0 shadow-lg rounded-xl text-white`}
+                                        onClick={confirmAction}
+                                    >
+                                        {confirmation.type === 'MISMATCH' ? 'Assign Anyway' : 'Confirm'}
+                                    </Button>
                                 </div>
                             </Card>
                         </motion.div>

@@ -231,12 +231,14 @@ export const matchReceipt = (request: ReceiptRequest, email: EmailCandidate): Ma
 export interface ContentMatchScore {
     score: number;
     details: string[];
+    foundAmount?: number;
 }
 
 export function matchReceiptByContent(text: string, request: ReceiptRequest): ContentMatchScore {
     const normText = text.toLowerCase().replace(/\s+/g, ' ');
     const details: string[] = [];
     let score = 0;
+    let foundAmount: number | undefined;
 
     // --- 1. Amount Scoring (Max 50) ---
     const tolerance = 0.20;
@@ -258,6 +260,7 @@ export function matchReceiptByContent(text: string, request: ReceiptRequest): Co
             if (diff <= 0.01) {
                 amountFound = true;
                 score += 70;
+                foundAmount = parsedAmount;
                 details.push(`Amount Exact Match (${parsedAmount})`);
                 break;
             }
@@ -266,6 +269,7 @@ export function matchReceiptByContent(text: string, request: ReceiptRequest): Co
                 if (!amountFound) {
                     amountFound = true;
                     score += 40;
+                    foundAmount = parsedAmount;
                     details.push(`Amount Fuzzy Match (${parsedAmount})`);
                 }
             }
@@ -330,5 +334,27 @@ export function matchReceiptByContent(text: string, request: ReceiptRequest): Co
         }
     }
 
-    return { score, details };
+    // ... (inside matchReceiptByContent) ...
+
+    return {
+        score,
+        details,
+        foundAmount,
+        matches: {
+            amount: score >= 40 && amountFound, // 40 is fuzzy amount threshold
+            merchant: merchantScore > 0,
+            date: details.some(d => d.includes("Date Found"))
+        }
+    };
+}
+
+export interface ContentMatchScore {
+    score: number;
+    details: string[];
+    foundAmount?: number;
+    matches: {
+        amount: boolean;
+        merchant: boolean;
+        date: boolean;
+    };
 }
