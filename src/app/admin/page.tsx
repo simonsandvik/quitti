@@ -1,10 +1,11 @@
-import { getAdminStats } from "@/lib/supabase";
+import { getAdminStats, getRecentBatches } from "@/lib/supabase";
 import { Card } from "@/components/ui/Card";
 
 export const dynamic = 'force-dynamic'; // Always fetch fresh data
 
 export default async function AdminDashboard() {
     const stats = await getAdminStats();
+    const recentBatches = await getRecentBatches();
 
     return (
         <div className="space-y-8 animate-in fade-in duration-500">
@@ -41,9 +42,35 @@ export default async function AdminDashboard() {
             </div>
 
             <Card className="p-8 border border-slate-200 bg-white rounded-2xl shadow-sm">
-                <h2 className="text-xl font-bold mb-4 text-slate-900">Recent System Logs</h2>
-                <div className="text-sm text-slate-500 italic">
-                    No logs available yet. (This is a placeholder for future activity tracking)
+                <h2 className="text-xl font-bold mb-6 text-slate-900">Recent Activity</h2>
+                <div className="space-y-4">
+                    {recentBatches && recentBatches.length > 0 ? (
+                        recentBatches.map((batch: any) => (
+                            <div key={batch.id} className="flex items-center justify-between p-4 bg-slate-50 rounded-xl border border-slate-100 hover:border-slate-200 transition-colors">
+                                <div className="flex items-center gap-4">
+                                    <div className="w-10 h-10 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center font-bold">
+                                        📁
+                                    </div>
+                                    <div>
+                                        <p className="font-bold text-slate-900">{batch.name || "Untitled Batch"}</p>
+                                        <p className="text-xs text-slate-500 font-mono">ID: {batch.id.substring(0, 8)}...</p>
+                                    </div>
+                                </div>
+                                <div className="text-right">
+                                    <p className="text-sm font-medium text-slate-700">
+                                        {new Date(batch.created_at).toLocaleDateString()}
+                                    </p>
+                                    <p className="text-xs text-slate-400">
+                                        {new Date(batch.created_at).toLocaleTimeString()}
+                                    </p>
+                                </div>
+                            </div>
+                        ))
+                    ) : (
+                        <div className="text-center py-12 text-slate-400 italic bg-slate-50 rounded-xl border border-slate-100 border-dashed">
+                            No recent activity found.
+                        </div>
+                    )}
                 </div>
             </Card>
         </div>

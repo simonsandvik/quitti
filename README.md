@@ -1,22 +1,79 @@
-# Quitti | Automated Receipt Finder
+# Quitti - Automated Receipt Hunter 🧾
 
-Quit chasing receipts. Quitti automatically finds, matches, and exports your missing bookkeeping documents from your email inboxes and ad accounts.
+Quitti automates the tedious process of finding receipts for your bookkeeping. It securely connects to your email (Gmail/Outlook) and ad accounts (Google Ads/Meta) to find, match, and download the exact receipts corresponding to your bank transactions.
 
-## Core Features
+## 🚀 Features
 
-- **Multi-Account Integration**: Connect Gmail, Outlook, Google Ads, and Meta Ads.
-- **Smart Matching**: Automatically matches your bookkeeping list (CSV/Excel) against emails and transactions.
-- **Automated Downloads**: Securely proxies and downloads PDF invoices directly.
-- **Bulk Export**: Zip and export all found receipts in seconds.
+*   **Smart Scanning**: Finds receipts in Gmail & Outlook.
+*   **Ad Platform Integration**: Fetches invoices directly from Google Ads & Meta Ads APIs.
+*   **Exact Matching**: Matches receipts to transactions by Date, Amount, and Merchant.
+*   **Team Sharing**: Share receipt reports with your accountant or team members.
+*   **Admin Dashboard**: Monitor system stats and user activity.
 
-## Setup
+## 🛠️ Getting Started
 
-1. **Prerequisites**: Node.js 18+ and a Supabase/NextAuth compatible database.
-2. **Environment**: Copy `.env.local.example` to `.env.local` and fill in your credentials.
-3. **Install**: `npm install`
-4. **Run**: `npm run dev`
+### Prerequisites
 
-## Documentation
+*   Node.js 18+
+*   Supabase Project
+*   Google Cloud Console Project (for OAuth)
 
-- [Google OAuth Setup Guide](./GOOGLE_AUTH_SETUP.md)
-- [Microsoft OAuth Setup Guide](./MICROSOFT_AUTH_SETUP.md)
+### Installation
+
+1.  Clone the repository:
+    ```bash
+    git clone https://github.com/your-username/quitti.git
+    cd quitti
+    ```
+
+2.  Install dependencies:
+    ```bash
+    npm install
+    ```
+
+3.  Configure Environment:
+    Create a `.env.local` file with the following keys:
+    ```env
+    # NextAuth
+    NEXTAUTH_URL=http://localhost:3000
+    NEXTAUTH_SECRET=your_secret
+
+    # Google OAuth
+    GOOGLE_CLIENT_ID=...
+    GOOGLE_CLIENT_SECRET=...
+
+    # Supabase
+    NEXT_PUBLIC_SUPABASE_URL=...
+    NEXT_PUBLIC_SUPABASE_ANON_KEY=...
+    SUPABASE_SERVICE_ROLE_KEY=...
+
+    # Admin Access (Comma-separated emails)
+    ADMIN_EMAILS=alice@admin.com,bob@admin.com
+    ```
+
+4.  Run the development server:
+    ```bash
+    npm run dev
+    ```
+
+## 🛡️ Admin Dashboard
+
+The application includes a hidden Admin Dashboard for monitoring.
+
+*   **URL**: `http://localhost:3000/admin`
+*   **Access**:
+    1.  You must be logged in.
+    2.  Your email must be listed in the `ADMIN_EMAILS` environment variable.
+
+## 📦 Deployment
+
+This project is optimized for deployment on **Vercel**.
+
+1.  Push your code to GitHub.
+2.  Import the project in Vercel.
+3.  Add the Environment Variables from your `.env.local`.
+4.  Deploy!
+
+## 📄 License
+
+Proprietary Software. All rights reserved.

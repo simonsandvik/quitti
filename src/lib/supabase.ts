@@ -195,3 +195,15 @@ export async function getAdminStats() {
         found: foundCount || 0
     };
 }
+
+export async function getRecentBatches() {
+    const adminClient = getSupabaseAdmin();
+    const { data, error } = await adminClient
+        .from('batches')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(5);
+
+    if (error) throw error;
+    return data;
+}

@@ -1,168 +1,147 @@
-"use server";
 
-export interface GoogleAdsCustomer {
+const GOOGLE_ADS_API_VERSION = "v17";
+const GOOGLE_ADS_API_BASE = `https://googleads.googleapis.com/${GOOGLE_ADS_API_VERSION}`;
+
+interface GoogleAdsCustomer {
     resourceName: string;
-    id: string;
+    id: string; // 1234567890
     descriptiveName?: string;
-    currencyCode?: string;
-    timeZone?: string;
 }
 
-export interface GoogleAdsInvoice {
-    resourceName: string; // customers/{customerId}/invoices/{invoiceId}
-    id: string; // The ID of the invoice
-    type: string; // e.g. INVOICE, ACCOUNT_BUDGET
-    billingSetup: string; // Resource name of billing setup
-    paymentsAccountId: string;
-    paymentsProfileId: string;
+interface GoogleAdsInvoice {
+    id: string;
     issueDate: string; // YYYY-MM-DD
-    dueDate: string; // YYYY-MM-DD
-    serviceDateRange: {
-        startDate: string; // YYYY-MM-DD
-        endDate: string; // YYYY-MM-DD
-    };
-    pdfUrl: string; // URL to download PDF
-    subtotalAmountMicros: string; // string (int64)
-    taxAmountMicros: string; // string (int64)
-    totalAmountMicros: string; // string (int64)
-    currencyCode: string; // ISO 4217
+    dueDate: string;
+    totalAmountMicros: string; // 1000000 = 1 unit
+    currencyCode: string;
+    pdfUrl?: string; // Derived or direct
+    resourceName: string;
 }
 
-const API_VERSION = "v17";
-
-/**
- * Lists all customers accessible by the user's OAuth token.
- * Note: This endpoint (customers:listAccessibleCustomers) returns a list of *customer resource names* requestable by the user.
- * It does NOT return details like descriptiveName directly, but we can try to fetch them or just return IDs.
- */
-export async function listAccessibleCustomers(accessToken: string, developerToken: string): Promise<string[]> {
-    const url = `https://googleads.googleapis.com/${API_VERSION}/customers:listAccessibleCustomers`;
-
-    const response = await fetch(url, {
-        method: 'GET',
-        headers: {
-            "Authorization": `Bearer ${accessToken}`,
-            "developer-token": developerToken,
-            "Content-Type": "application/json"
-        }
-    });
-
-    if (!response.ok) {
-        console.error("Failed to list accessible customers", await response.text());
-        // Return empty instead of throwing to avoid crashing the client loop
-        return [];
-    }
-
-    const data = await response.json();
-    // data.resourceNames is an array of strings like "customers/1234567890"
-    return data.resourceNames || [];
-}
-
-/**
- * List Invoices for a specific customer.
- * 
- * @param accessToken OAuth access token
- * @param developerToken Google Ads Developer Token
- * @param customerId The 10-digit customer ID (e.g. "1234567890")
- * @param billingSetup Optional billing setup resource name filter
- * @param issueYear Year to fetch (e.g. "2024")
- * @param issueMonth Month to fetch (e.g. "JANUARY")
- */
-export async function listInvoices(
-    accessToken: string,
-    developerToken: string,
-    customerId: string,
-    loginCustomerId?: string, // Optional: if acting as a manager
-    query?: {
-        billingSetup?: string;
-        issueYear: string;
-        issueMonth: string;
-    }
-): Promise<GoogleAdsInvoice[]> {
-    // If we only have "customers/1234567890", strip strictly to digits
-    const cleanId = customerId.replace(/[^0-9]/g, "");
-
-    // Construct URL with query params
-    const baseUrl = `https://googleads.googleapis.com/${API_VERSION}/customers/${cleanId}/invoices`;
-    const params = new URLSearchParams();
-    if (query?.billingSetup) params.append("billingSetup", query.billingSetup);
-    params.append("issueYear", query?.issueYear || new Date().getFullYear().toString());
-    // Default to current month if not specified? Or required?
-    // API requires issueMonth. We might need to guess or ask user. 
-    // Let's default to a known enum if missing, or require it. 
-    // For now, let's assume the caller provides it or we default to a check.
-    if (query?.issueMonth) params.append("issueMonth", query.issueMonth);
-
-    const url = `${baseUrl}?${params.toString()}`;
-
+// Helper for headers
+const getHeaders = (accessToken: string, developerToken: string, customerId?: string) => {
     const headers: Record<string, string> = {
         "Authorization": `Bearer ${accessToken}`,
         "developer-token": developerToken,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
     };
-
-    if (loginCustomerId) {
-        headers["login-customer-id"] = loginCustomerId;
+    if (customerId) {
+        headers["login-customer-id"] = customerId;
     }
+    return headers;
+};
 
-    const response = await fetch(url, {
-        method: 'GET',
-        headers
-    });
+export const listAccessibleCustomers = async (accessToken: string, developerToken: string): Promise<string[]> => {
+    try {
+        const url = `${GOOGLE_ADS_API_BASE}/customers:listAccessibleCustomers`;
+        const res = await fetch(url, {
+            method: "GET",
+            headers: getHeaders(accessToken, developerToken)
+        });
 
-    if (!response.ok) {
-        // 403 or 400 usually indicates invalid customer or no invoices
-        const errorText = await response.text();
-        console.warn(`Failed to list invoices for ${cleanId}: ${errorText}`);
+        if (!res.ok) {
+            const err = await res.text();
+            console.error("Google Ads listAccessibleCustomers failed", err);
+            return [];
+        }
+
+        const data = await res.json();
+        // resourceNames: ["customers/1234567890", ...]
+        return data.resourceNames || [];
+    } catch (e) {
+        console.error("Error listing Google Ads customers", e);
         return [];
     }
+};
 
-    const data = await response.json();
-    // data.invoices is the array
-    const invoices: any[] = data.invoices || [];
+export const listInvoices = async (accessToken: string, developerToken: string, customerResourceName: string): Promise<GoogleAdsInvoice[]> => {
+    // customerResourceName is "customers/1234567890" -> extract ID "1234567890"
+    const customerId = customerResourceName.split("/")[1];
 
-    return invoices.map(inv => ({
-        resourceName: inv.resourceName,
-        id: inv.id,
-        type: inv.type,
-        billingSetup: inv.billingSetup,
-        paymentsAccountId: inv.paymentsAccountId,
-        paymentsProfileId: inv.paymentsProfileId,
-        issueDate: inv.issueDate, // "2024-01-02"
-        dueDate: inv.dueDate,
-        serviceDateRange: {
-            startDate: inv.serviceDateRange?.startDate,
-            endDate: inv.serviceDateRange?.endDate
-        },
-        pdfUrl: inv.pdfUrl,
-        subtotalAmountMicros: inv.subtotalAmountMicros,
-        taxAmountMicros: inv.taxAmountMicros,
-        totalAmountMicros: inv.totalAmountMicros,
-        currencyCode: inv.currencyCode
-    }));
-}
+    // NOTE: Google Ads API "Invoice" resource is tricky.
+    // We often query 'invoice' resource directly if available (Account Budget/Billing setup required).
+    // Query: SELECT invoice.id, invoice.issue_date, invoice.due_date, invoice.total_amount_micros, invoice.currency_code, invoice.pdf_url FROM invoice
 
-/**
- * Downloads a PDF from a given URL proxying through the server to avoid CORS.
- * Returns Base64 string of the PDF content.
- */
-export async function downloadInvoicePdf(url: string, accessToken: string): Promise<string | null> {
+    // Attempting query
+    const query = `
+        SELECT 
+            invoice.id, 
+            invoice.issue_date, 
+            invoice.due_date, 
+            invoice.total_amount_micros, 
+            invoice.currency_code, 
+            invoice.pdf_url 
+        FROM invoice 
+        WHERE invoice.issue_date >= '2023-01-01'
+    `;
+
     try {
-        const response = await fetch(url, {
+        const url = `${GOOGLE_ADS_API_BASE}/customers/${customerId}/googleAds:search`;
+        const res = await fetch(url, {
+            method: "POST",
+            headers: getHeaders(accessToken, developerToken, customerId), // Important: login-customer-id might be required if acting as manager
+            body: JSON.stringify({ query })
+        });
+
+        if (!res.ok) {
+            // Common error: NOT_ADS_USER or permission denied.
+            // Just warn and return empty.
+            const err = await res.text();
+            console.warn(`Google Ads search failed for ${customerId}:`, err);
+            return [];
+        }
+
+        const data = await res.json();
+        /*
+           data.results = [
+             {
+               invoice: {
+                 resourceName: 'customers/123/invoices/456',
+                 id: '456',
+                 issueDate: '2024-01-01',
+                 totalAmountMicros: '1000000',
+                 currencyCode: 'EUR',
+                 pdfUrl: 'https://...'
+               }
+             }
+           ]
+        */
+
+        if (!data.results) return [];
+
+        return data.results.map((row: any) => ({
+            id: row.invoice.id,
+            issueDate: row.invoice.issueDate,
+            dueDate: row.invoice.dueDate,
+            totalAmountMicros: row.invoice.totalAmountMicros,
+            currencyCode: row.invoice.currencyCode,
+            pdfUrl: row.invoice.pdfUrl, // Provide if available
+            resourceName: row.invoice.resourceName
+        }));
+
+    } catch (e) {
+        console.error(`Error listing invoices for ${customerId}`, e);
+        return [];
+    }
+};
+
+export const downloadInvoicePdf = async (pdfUrl: string, accessToken: string): Promise<string | null> => {
+    try {
+        // pdfUrl is usually a direct authenticated link or requires headers.
+        // Google Ads API docs say pdf_url usually works with the same auth headers.
+
+        const res = await fetch(pdfUrl, {
             headers: {
                 "Authorization": `Bearer ${accessToken}`
             }
         });
 
-        if (!response.ok) {
-            console.error(`Failed to download PDF from ${url}: ${response.statusText}`);
-            return null;
-        }
+        if (!res.ok) return null;
 
-        const arrayBuffer = await response.arrayBuffer();
+        const arrayBuffer = await res.arrayBuffer();
         return Buffer.from(arrayBuffer).toString('base64');
     } catch (e) {
-        console.error("Server Code: Failed to download PDF", e);
+        console.error("Failed to download Google Ads PDF", e);
         return null;
     }
-}
+};
