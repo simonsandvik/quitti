@@ -22,7 +22,9 @@ export interface MatchResult {
     confidence: number;
     details: string;
     matchedHtml?: string; // Stored HTML from email candidate
+    matchedData?: any; // Stored structured data for PDF generation (e.g. Meta Ads)
     storagePath?: string; // Cloud bucket path for matched file
+    downloadUrl?: string; // Pre-signed URL for public/shared access
 }
 
 /**
@@ -157,7 +159,22 @@ export const matchReceipt = (request: ReceiptRequest, email: EmailCandidate): Ma
         }
     }
 
-    // D. Keyword Anchor Match (Boosting +15)
+    // D. Specialized Provider Rules
+    // Prevent "Google GSuite" from claiming Meta/Facebook receipts just because they might have "Google" in the sender or body
+    if (request.merchant.toLowerCase().includes("facebook") || request.merchant.toLowerCase().includes("meta")) {
+        if (senderLower.includes("google") || senderLower.includes("gsuite") || subjectLower.includes("gsuite")) {
+            console.log(`[Matcher] Blocking False Positive: ${request.merchant} vs Google/GSuite sender`);
+            return {
+                receiptId: request.id,
+                emailId: email.id,
+                status: "NOT_FOUND",
+                confidence: 0,
+                details: "Blocked: Meta/Facebook receipt cannot be matched to Google/GSuite sender"
+            };
+        }
+    }
+
+    // E. Keyword Anchor Match (Boosting +15)
     if (rule?.keywords) {
         const foundKeyword = rule.keywords.find(k =>
             subjectLower.includes(k.toLowerCase()) ||

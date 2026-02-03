@@ -1,5 +1,7 @@
 import Papa from "papaparse";
-import { v4 as uuidv4 } from "uuid";
+import { v4 as uuidv4, v5 as uuidv5 } from "uuid";
+
+const NAMESPACE = "6b8b4567-d1a1-42e6-a2b8-f98b23f20737"; // Fixed namespace for Quitti IDs
 
 export interface ReceiptRequest {
     id: string;
@@ -7,7 +9,9 @@ export interface ReceiptRequest {
     merchant: string;
     amount: number;
     currency: string;
-    status: "pending" | "found" | "possible" | "not_found";
+    status: "pending" | "found" | "possible" | "not_found" | "missing";
+    is_truly_missing?: boolean;
+    missing_reason?: string;
 }
 
 // Helper to normalize amount
@@ -169,8 +173,12 @@ export const parseReceipts = (input: string): ReceiptRequest[] => {
         }
 
         if (date && amount > 0) {
+            // Use deterministic ID based on content to prevent duplicates across refreshes/pastes
+            const contentString = `${date}_${merchant.toLowerCase()}_${amount.toFixed(2)}`;
+            const deterministicId = uuidv5(contentString, NAMESPACE);
+
             parsed.push({
-                id: uuidv4(),
+                id: deterministicId,
                 date,
                 merchant: merchant || "Unknown Merchant",
                 amount,

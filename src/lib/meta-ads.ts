@@ -26,7 +26,7 @@ const API_VERSION = "v21.0";
  * Lists all ad accounts accessible by the user's OAuth token.
  */
 export async function listAdAccounts(accessToken: string): Promise<MetaAdAccount[]> {
-    const url = `https://graph.facebook.com/${API_VERSION}/me/adaccounts?fields=id,account_id,name,currency`;
+    const url = `https://graph.facebook.com/${API_VERSION}/me/adaccounts?fields=id,account_id,name,currency,business&limit=1000`;
 
     const response = await fetch(url, {
         headers: {
@@ -46,7 +46,8 @@ export async function listAdAccounts(accessToken: string): Promise<MetaAdAccount
         id: acc.id,
         account_id: acc.account_id,
         name: acc.name,
-        currency: acc.currency
+        currency: acc.currency,
+        business: acc.business
     }));
 }
 
@@ -55,8 +56,12 @@ export async function listAdAccounts(accessToken: string): Promise<MetaAdAccount
  * Meta Ads invoices are often attached to the Business Manager.
  * For individual ad accounts, we might need to check 'transactions' or 'invoices' if enabled.
  */
-export async function listBusinessInvoices(accessToken: string, businessId: string): Promise<MetaInvoice[]> {
-    const url = `https://graph.facebook.com/${API_VERSION}/${businessId}/business_invoices?fields=id,invoice_id,issue_date,total_amount,download_uri,status`;
+export async function listBusinessInvoices(accessToken: string, businessId: string, fromDate?: string): Promise<MetaInvoice[]> {
+    let url = `https://graph.facebook.com/${API_VERSION}/${businessId}/business_invoices?fields=id,invoice_id,issue_date,total_amount,download_uri,status`;
+
+    if (fromDate) {
+        url += `&from_date=${fromDate}`;
+    }
 
     const response = await fetch(url, {
         headers: {
@@ -89,8 +94,12 @@ export async function listBusinessInvoices(accessToken: string, businessId: stri
 /**
  * Fallback: List transactions for an Ad Account and try to find invoice IDs.
  */
-export async function listAdAccountTransactions(accessToken: string, adAccountId: string): Promise<any[]> {
-    const url = `https://graph.facebook.com/${API_VERSION}/${adAccountId}/transactions?fields=id,time,amount,billing_reason,invoice_id`;
+export async function listAdAccountTransactions(accessToken: string, adAccountId: string, since?: number, limit: number = 200): Promise<any[]> {
+    let url = `https://graph.facebook.com/${API_VERSION}/${adAccountId}/transactions?fields=id,time,amount,billing_reason,invoice_id&limit=${limit}`;
+
+    if (since) {
+        url += `&since=${since}`;
+    }
 
     const response = await fetch(url, {
         headers: {
@@ -100,10 +109,64 @@ export async function listAdAccountTransactions(accessToken: string, adAccountId
     });
 
     if (!response.ok) {
+        const errText = await response.text();
+        console.error(`[Meta API Error] ${response.status} ${response.statusText} - ${url}`, errText);
         return [];
     }
 
     const data = await response.json();
+    console.log(`[Meta API Success] Fetched ${data.data?.length} records from ${url}`);
+    // TODO: Handle clean pagination if > limit, but 200-500 is usually enough for monthly checks
+    return data.data || [];
+}
+
+export interface MetaBillingActivity {
+    id: string;
+    event_time: string;
+    event_type: string;
+    extra_data?: {
+        amount?: string;
+        currency?: string;
+        billing_event?: string;
+    };
+    translated_event_type?: string;
+}
+
+/**
+ * List Ad Account Billing Activities (credit card charges).
+ * This is the correct endpoint for prepay/credit card charges.
+ */
+export async function listAdAccountBillingActivities(accessToken: string, adAccountId: string, since?: number): Promise<MetaBillingActivity[]> {
+    // Request ALL available fields to find where the amount is stored
+    let url = `https://graph.facebook.com/${API_VERSION}/${adAccountId}/activities?fields=event_time,event_type,extra_data,translated_event_type,actor_name,object_name,object_type&event_type=ad_account_billing_charge&limit=500`;
+
+    if (since) {
+        url += `&since=${since}`;
+    }
+
+    console.log(`[Meta] Fetching billing activities from: ${url}`);
+
+    const response = await fetch(url, {
+        headers: {
+            "Authorization": `Bearer ${accessToken}`,
+            "Content-Type": "application/json"
+        }
+    });
+
+    if (!response.ok) {
+        const errText = await response.text();
+        console.error(`[Meta Billing Activities Error] ${response.status} ${response.statusText}`, errText);
+        return [];
+    }
+
+    const data = await response.json();
+    console.log(`[Meta] Found ${data.data?.length || 0} billing activities`);
+
+    // Debug: Log first activity to see structure
+    if (data.data?.length > 0) {
+        console.log(`[Meta Debug] First Billing Activity (full):`, JSON.stringify(data.data[0], null, 2));
+    }
+
     return data.data || [];
 }
 

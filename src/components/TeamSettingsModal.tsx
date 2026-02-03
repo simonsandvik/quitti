@@ -28,7 +28,16 @@ export const TeamSettingsModal = ({ isOpen, onClose }: TeamSettingsModalProps) =
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || "Failed");
 
-            setInviteUrl(data.url);
+            let url = data.url;
+            if (url && !url.startsWith('http')) {
+                // If the API returns relative path (or if we want to force relative origin)
+                url = `${window.location.origin}${url.startsWith('/') ? '' : '/'}${url}`;
+            } else if (url && url.includes('localhost') && !window.location.href.includes('localhost')) {
+                // Heuristic: If we are on a tunnel (not localhost) but URL says localhost, rewrite it
+                url = url.replace(/https?:\/\/localhost:[0-9]+/, window.location.origin);
+            }
+
+            setInviteUrl(url);
         } catch (e: any) {
             setError(e.message);
         } finally {

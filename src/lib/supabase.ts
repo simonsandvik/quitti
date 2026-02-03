@@ -28,13 +28,26 @@ export async function uploadReceiptFile(userId: string, receiptId: string, file:
     const ext = file.name.split('.').pop();
     const path = `${userId}/${receiptId}.${ext}`;
 
+    console.log(`[Upload Debug] Starting upload: ${file.name}, Size: ${file.size} bytes, Type: ${file.type}`);
+
+    if (file.size === 0) {
+        console.error(`[Upload Debug] CRITICAL: File is empty! Not uploading.`);
+        throw new Error("Cannot upload empty file");
+    }
+
     const { data, error } = await supabase.storage
         .from('receipts')
         .upload(path, file, {
-            upsert: true
+            upsert: true,
+            contentType: file.type || 'application/pdf' // Ensure MIME type is set
         });
 
-    if (error) throw error;
+    if (error) {
+        console.error(`[Upload Debug] Upload failed:`, error);
+        throw error;
+    }
+
+    console.log(`[Upload Debug] Upload successful: ${path}`);
     return path;
 }
 
@@ -97,7 +110,11 @@ export async function createBatch(userId: string, name: string, organizationId?:
         .select()
         .single();
 
-    if (error) throw error;
+    if (error) {
+        console.error("[Supabase] createBatch Error:", error);
+        throw error;
+    }
+    console.log(`[Supabase] Created batch ${data.id} for user ${userId}`);
     return data;
 }
 
@@ -112,11 +129,15 @@ export async function saveReceiptRequests(batchId: string, requests: ReceiptRequ
         status: r.status || 'pending',
     }));
 
+    console.log(`[Supabase] Upserting ${rows.length} receipts for batch ${batchId}. First ID: ${rows[0]?.id}`);
     const { error } = await supabase
         .from('receipt_requests')
-        .insert(rows);
+        .upsert(rows);
 
-    if (error) throw error;
+    if (error) {
+        console.error("[Supabase] Upsert Error:", error);
+        throw error;
+    }
 }
 
 export async function updateMatchResult(requestId: string, match: MatchResult, userId: string, storagePath?: string) {

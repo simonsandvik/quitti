@@ -2,6 +2,7 @@
 
 import React from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { Trash2, CheckCircle2 } from "lucide-react";
 import { Button } from "./ui/Button";
 import { Card } from "./ui/Card";
 import { MatchResult } from "@/lib/matcher";
@@ -13,23 +14,40 @@ import { StatusBadge } from "./StatusBadge";
 import { MerchantGroup } from "./MerchantGroup";
 import { ShareModal } from "./ShareModal";
 import { TeamSettingsModal } from "./TeamSettingsModal";
+import { MissingReceiptModal } from "./MissingReceiptModal";
+import { markAsTrulyMissingServerAction } from "@/app/actions";
 
 interface ResultsTableProps {
     receipts: ReceiptRequest[];
     matches: MatchResult[];
     autoFoundFiles?: Record<string, File>;
     activeBatchId?: string | null;
-    onExport: (manualFiles: Record<string, File>) => void;
+    onExport: (manualFiles: Record<string, File>, useFolders: boolean) => void;
     onRestart: () => void;
+    onPreview: (url: string, type: 'pdf' | 'image' | 'html') => void;
     onAddInbox?: () => void;
+    isPaid?: boolean;
+    onPaymentRequired?: () => void;
 }
 
-export const ResultsTable = ({ receipts, matches, autoFoundFiles, activeBatchId, onExport, onRestart, onAddInbox }: ResultsTableProps) => {
+export const ResultsTable = ({
+    receipts,
+    matches,
+    autoFoundFiles,
+    activeBatchId,
+    onExport,
+    onRestart,
+    onPreview,
+    onAddInbox,
+    isPaid = false,
+    onPaymentRequired
+}: ResultsTableProps) => {
     const { data: session } = useSession();
     const [manualFiles, setManualFiles] = React.useState<Record<string, File>>({});
-    const [previewId, setPreviewId] = React.useState<string | null>(null);
+    const [previewData, setPreviewData] = React.useState<{ url: string; type: 'pdf' | 'image' | 'html' } | null>(null);
     const [showShareModal, setShowShareModal] = React.useState(false);
     const [showTeamModal, setShowTeamModal] = React.useState(false);
+    const [showExportMenu, setShowExportMenu] = React.useState(false);
 
     // Sync auto-found files into manualFiles state
     React.useEffect(() => {
@@ -42,6 +60,7 @@ export const ResultsTable = ({ receipts, matches, autoFoundFiles, activeBatchId,
 
     const [unmatchedFiles, setUnmatchedFiles] = React.useState<File[]>([]);
     const [isScanning, setIsScanning] = React.useState(false);
+    const [declaringReceipt, setDeclaringReceipt] = React.useState<ReceiptRequest | null>(null);
     const [confirmation, setConfirmation] = React.useState<{
         type: 'MISSING' | 'REMOVE' | 'MISMATCH',
         id: string,
@@ -107,6 +126,20 @@ export const ResultsTable = ({ receipts, matches, autoFoundFiles, activeBatchId,
     };
 
     const toggleMissing = (id: string) => requestToggleMissing(id); /* Wrapper to keep prop name same */
+
+    const handleTrulyMissing = async (reason: string) => {
+        if (!declaringReceipt) return;
+        try {
+            await markAsTrulyMissingServerAction(declaringReceipt.id, reason);
+            // Updating local state (assuming revalidatePath handles the rest, 
+            // but for immediate UI feedback we might want to update local state too)
+            // For now, let's trust the server action and refresh
+            window.location.reload();
+        } catch (e) {
+            console.error("Failed to mark as truly missing", e);
+            alert("Failed to save declaration. Please try again.");
+        }
+    };
     const handleRemoveFileWrapper = (id: string) => requestRemoveFile(id);
 
     const toggleGroup = (group: string) => {
@@ -271,8 +304,9 @@ export const ResultsTable = ({ receipts, matches, autoFoundFiles, activeBatchId,
         }
     };
     // Active receipts are those NOT marked missing
-    const activeReceipts = receipts.filter(r => !missingIds.has(r.id));
-    const missingReceiptsList = receipts.filter(r => missingIds.has(r.id));
+    // Active receipts are those NOT marked missing (either locally or persisted)
+    const activeReceipts = receipts.filter(r => !missingIds.has(r.id) && !r.is_truly_missing);
+    const missingReceiptsList = receipts.filter(r => missingIds.has(r.id) || r.is_truly_missing);
 
     const foundCount = activeReceipts.filter(r => {
         const status = manualFiles[r.id] ? "FOUND" : (matches.find(m => m.receiptId === r.id)?.status || "NOT_FOUND");
@@ -285,7 +319,9 @@ export const ResultsTable = ({ receipts, matches, autoFoundFiles, activeBatchId,
     // Merchants based on ACTIVE only
     const merchants = Array.from(new Set(activeReceipts.map(r => r.merchant))).sort();
 
-    // Grouping logic for the UI
+    const [bulkUploading, setBulkUploading] = React.useState(false);
+    const [showDeleteModal, setShowDeleteModal] = React.useState(false);
+
     const groupMap = new Map<string, string[]>();
     activeReceipts.forEach(r => {
         const { main } = getMerchantHierarchy(r.merchant);
@@ -298,6 +334,73 @@ export const ResultsTable = ({ receipts, matches, autoFoundFiles, activeBatchId,
     });
 
     const sortedGroups = Array.from(groupMap.keys()).sort();
+
+    const executeDelete = async () => {
+        try {
+            if (activeBatchId) {
+                const { deleteBatchServerAction } = await import("@/app/actions");
+                await deleteBatchServerAction(activeBatchId);
+            }
+
+            // Nuclear wipe of all potential session data
+            localStorage.removeItem("quitti-active-batch");
+            localStorage.removeItem("quitti-matches");
+            localStorage.removeItem("quitti-queue");
+            localStorage.removeItem("quitti-receipts");
+            localStorage.removeItem("quitti-sessions");
+            sessionStorage.removeItem("quitti-active-tab");
+            sessionStorage.removeItem("quitti-is-connecting");
+
+            // Force return to front page
+            window.location.href = "/";
+        } catch (err) {
+            console.error("Failed to delete project", err);
+            alert("Failed to delete project. Please try again.");
+            setShowDeleteModal(false);
+        }
+    };
+
+    const [viewMode, setViewMode] = React.useState<'grouped' | 'list'>('grouped');
+    const [sortConfig, setSortConfig] = React.useState<{ field: 'date' | 'merchant' | 'amount' | 'status', direction: 'asc' | 'desc' }>({
+        field: 'date',
+        direction: 'desc'
+    });
+
+    const handleSort = (field: 'date' | 'merchant' | 'amount' | 'status') => {
+        setSortConfig(current => ({
+            field,
+            direction: current.field === field && current.direction === 'desc' ? 'asc' : 'desc'
+        }));
+    };
+
+    const getSortedReceipts = () => {
+        return [...activeReceipts].sort((a, b) => {
+            const modifier = sortConfig.direction === 'asc' ? 1 : -1;
+
+            if (sortConfig.field === 'date') {
+                return (new Date(a.date).getTime() - new Date(b.date).getTime()) * modifier;
+            }
+            if (sortConfig.field === 'amount') {
+                return (a.amount - b.amount) * modifier;
+            }
+            if (sortConfig.field === 'merchant') {
+                return a.merchant.localeCompare(b.merchant) * modifier;
+            }
+            if (sortConfig.field === 'status') {
+                const getStatus = (r: ReceiptRequest) => {
+                    const match = matches.find(m => m.receiptId === r.id);
+                    const manualFile = manualFiles[r.id];
+                    const isFound = match?.status === "FOUND" || !!manualFile;
+                    const isMissing = missingIds.has(r.id);
+                    if (isMissing) return 0; // MISSING
+                    if (isFound) return 2;   // FOUND
+                    return 1;                // PENDING
+                };
+                return (getStatus(a) - getStatus(b)) * modifier;
+            }
+            return 0;
+        });
+    };
 
     return (
         <motion.div
@@ -312,28 +415,117 @@ export const ResultsTable = ({ receipts, matches, autoFoundFiles, activeBatchId,
                         Found {foundCount} items. {pendingCount} still pending. {missingReceiptsList.length} marked missing.
                     </p>
                 </div>
-                <div className="flex flex-wrap gap-3 items-center">
-                    {isScanning && <motion.span initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="animate-pulse text-xs text-emerald-500 font-bold">Scanning content...</motion.span>}
-                    <div className="relative">
-                        <Button variant="secondary" disabled={isScanning} size="sm" className="px-4 py-2 border-slate-200">Bulk Upload All</Button>
-                        <input
-                            type="file"
-                            multiple
-                            accept="image/*,.pdf"
-                            onChange={(e) => handleBulkUpload(e.target.files)}
-                            disabled={isScanning}
-                            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                        />
+                <div className="flex flex-col items-end gap-3">
+                    <div className="flex bg-slate-100 p-1 rounded-lg">
+                        <button
+                            onClick={() => setViewMode('grouped')}
+                            className={`px-3 py-1 text-xs font-bold rounded-md transition-all ${viewMode === 'grouped' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                        >
+                            Grouped
+                        </button>
+                        <button
+                            onClick={() => setViewMode('list')}
+                            className={`px-3 py-1 text-xs font-bold rounded-md transition-all ${viewMode === 'list' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                        >
+                            List View
+                        </button>
                     </div>
-                    <Button variant="primary" onClick={() => onExport(manualFiles)} className="bg-emerald-500 hover:bg-emerald-600 text-white shadow-xl shadow-emerald-500/20 px-6 py-2 h-auto border-0 rounded-xl">
-                        Download Finished ZIP
-                    </Button>
-                    <Button variant="secondary" onClick={() => setShowTeamModal(true)} className="bg-white hover:bg-slate-50 text-slate-600 border border-slate-200 shadow-sm px-4 py-2 h-auto rounded-xl">
-                        Team
-                    </Button>
-                    <Button variant="secondary" onClick={() => setShowShareModal(true)} className="bg-white hover:bg-slate-50 text-emerald-600 border border-emerald-100 shadow-sm px-4 py-2 h-auto rounded-xl">
-                        Share w/ Bookkeeper
-                    </Button>
+
+                    <div className="flex flex-wrap gap-3 items-center relative">
+                        {isScanning && <motion.span initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="animate-pulse text-xs text-emerald-500 font-bold">Scanning content...</motion.span>}
+
+                        {/* Bulk Upload */}
+                        <div className="relative">
+                            <Button variant="secondary" disabled={isScanning} size="sm" className="px-4 py-2 border-slate-200">Bulk Upload</Button>
+                            <input
+                                type="file"
+                                multiple
+                                accept="image/*,.pdf"
+                                onChange={(e) => handleBulkUpload(e.target.files)}
+                                disabled={isScanning}
+                                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                            />
+                        </div>
+
+                        {/* Delete Project */}
+                        <Button variant="secondary" onClick={() => setShowDeleteModal(true)} className="bg-white hover:bg-red-50 text-red-500 border-red-100 shadow-sm px-4 py-2 h-auto rounded-xl">
+                            Delete Project
+                        </Button>
+
+                        {/* Share (Team) - Renamed from Team */}
+                        <Button variant="secondary" onClick={() => setShowTeamModal(true)} className="bg-white hover:bg-slate-50 text-slate-800 border border-slate-200 shadow-sm px-4 py-2 h-auto rounded-xl">
+                            Share
+                        </Button>
+
+                        {/* EXPORT DROPDOWN */}
+                        <div className="relative">
+                            <Button
+                                variant="primary"
+                                onClick={() => setShowExportMenu(!showExportMenu)}
+                                className="bg-emerald-500 hover:bg-emerald-600 text-white shadow-xl shadow-emerald-500/20 px-6 py-2 h-auto border-0 rounded-xl flex items-center gap-2"
+                            >
+                                Export / Download
+                                <span className="text-xs opacity-70">▼</span>
+                            </Button>
+
+                            {/* Menu */}
+                            <AnimatePresence>
+                                {showExportMenu && (
+                                    <>
+                                        {/* Backdrop to close */}
+                                        <div className="fixed inset-0 z-10" onClick={() => setShowExportMenu(false)} />
+
+                                        <motion.div
+                                            initial={{ opacity: 0, y: 10 }}
+                                            animate={{ opacity: 1, y: 0 }}
+                                            exit={{ opacity: 0, y: 10 }}
+                                            className="absolute right-0 top-full mt-2 w-64 bg-white rounded-xl shadow-xl border border-slate-100 z-20 overflow-hidden flex flex-col p-1"
+                                        >
+                                            <div className="px-3 py-2 text-xs font-bold text-slate-400 uppercase tracking-wider">Download</div>
+                                            <button
+                                                onClick={() => {
+                                                    onExport(manualFiles, true); // Folders
+                                                    setShowExportMenu(false);
+                                                }}
+                                                className="text-left px-3 py-2 text-sm text-slate-700 hover:bg-emerald-50 hover:text-emerald-700 rounded-lg transition-colors flex items-center justify-between group"
+                                            >
+                                                <span>Download ZIP (Folders)</span>
+                                                <span className="text-emerald-500 opacity-0 group-hover:opacity-100">↓</span>
+                                            </button>
+                                            <button
+                                                onClick={() => {
+                                                    onExport(manualFiles, false); // Flat
+                                                    setShowExportMenu(false);
+                                                }}
+                                                className="text-left px-3 py-2 text-sm text-slate-700 hover:bg-emerald-50 hover:text-emerald-700 rounded-lg transition-colors flex items-center justify-between group"
+                                            >
+                                                <span>Download ZIP (Flat)</span>
+                                                <span className="text-emerald-500 opacity-0 group-hover:opacity-100">↓</span>
+                                            </button>
+
+                                            <div className="h-px bg-slate-100 my-1"></div>
+
+                                            <div className="px-3 py-2 text-xs font-bold text-slate-400 uppercase tracking-wider">Share</div>
+                                            <button
+                                                onClick={() => {
+                                                    if (isPaid) {
+                                                        setShowShareModal(true);
+                                                    } else if (onPaymentRequired) {
+                                                        onPaymentRequired();
+                                                    }
+                                                    setShowExportMenu(false);
+                                                }}
+                                                className="text-left px-3 py-2 text-sm text-slate-700 hover:bg-blue-50 hover:text-blue-700 rounded-lg transition-colors flex items-center justify-between group"
+                                            >
+                                                <span>Share w/ Bookkeeper</span>
+                                                <span className="text-blue-500 opacity-0 group-hover:opacity-100">↗</span>
+                                            </button>
+                                        </motion.div>
+                                    </>
+                                )}
+                            </AnimatePresence>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -351,7 +543,14 @@ export const ResultsTable = ({ receipts, matches, autoFoundFiles, activeBatchId,
                                     <span className="ml-2">You can connect another inbox or mark them as missing manually.</span>
                                 </p>
                             </div>
-                            <Button variant="secondary" size="sm" onClick={onAddInbox} className="text-xs px-4 py-2 h-auto border-slate-200">Connect another inbox</Button>
+                            <Button
+                                variant="primary"
+                                size="sm"
+                                onClick={onAddInbox}
+                                className="bg-indigo-600 hover:bg-indigo-700 text-white shadow-lg shadow-indigo-600/20 border-0 text-xs px-6 py-2 h-auto rounded-xl"
+                            >
+                                Connect another inbox
+                            </Button>
                         </Card>
                     </motion.div>
                 )}
@@ -385,7 +584,10 @@ export const ResultsTable = ({ receipts, matches, autoFoundFiles, activeBatchId,
                                         >
                                             <span>{file.name}</span>
                                             <button
-                                                onClick={() => setPreviewId(URL.createObjectURL(file))}
+                                                onClick={() => {
+                                                    const type = file.type.includes('pdf') ? 'pdf' : 'image';
+                                                    setPreviewData({ url: URL.createObjectURL(file), type });
+                                                }}
                                                 className="bg-none border-0 cursor-pointer text-white hover:text-red-200"
                                                 title="Preview File"
                                             >
@@ -408,178 +610,284 @@ export const ResultsTable = ({ receipts, matches, autoFoundFiles, activeBatchId,
                 )}
             </AnimatePresence>
 
-            <div className="flex flex-col gap-4">
-                {sortedGroups.map((mainGroup, index) => {
-                    const groupReceipts = activeReceipts.filter(r => getMerchantHierarchy(r.merchant).main === mainGroup);
-                    const groupFoundCount = groupReceipts.filter(r => {
-                        const status = matches.find(m => m.receiptId === r.id)?.status;
-                        return status === "FOUND" || !!manualFiles[r.id];
-                    }).length;
-                    const isComplete = groupFoundCount === groupReceipts.length && groupReceipts.length > 0;
-                    const isPartial = groupFoundCount > 0 && !isComplete;
-                    const isExpanded = expandedGroups.has(mainGroup);
-                    const subMerchants = groupMap.get(mainGroup) || [];
+            {viewMode === 'list' ? (
+                // LIST VIEW
+                <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
+                    <table className="w-full text-sm">
+                        <thead className="bg-slate-50 border-b border-slate-200 select-none">
+                            <tr>
+                                <th onClick={() => handleSort('date')} className="px-4 py-3 text-left font-bold text-slate-400 uppercase tracking-wider text-xs cursor-pointer hover:bg-slate-100 transition-colors group">
+                                    Date <span className="invisible group-hover:visible">{sortConfig.field === 'date' ? (sortConfig.direction === 'asc' ? '↑' : '↓') : '↕'}</span>
+                                    {sortConfig.field === 'date' && <span className="ml-1 text-slate-900">{sortConfig.direction === 'asc' ? '↑' : '↓'}</span>}
+                                </th>
+                                <th onClick={() => handleSort('merchant')} className="px-4 py-3 text-left font-bold text-slate-400 uppercase tracking-wider text-xs cursor-pointer hover:bg-slate-100 transition-colors group">
+                                    Merchant <span className="invisible group-hover:visible">{sortConfig.field === 'merchant' ? (sortConfig.direction === 'asc' ? '↑' : '↓') : '↕'}</span>
+                                    {sortConfig.field === 'merchant' && <span className="ml-1 text-slate-900">{sortConfig.direction === 'asc' ? '↑' : '↓'}</span>}
+                                </th>
+                                <th onClick={() => handleSort('amount')} className="px-4 py-3 text-left font-bold text-slate-400 uppercase tracking-wider text-xs cursor-pointer hover:bg-slate-100 transition-colors group">
+                                    Amount <span className="invisible group-hover:visible">{sortConfig.field === 'amount' ? (sortConfig.direction === 'asc' ? '↑' : '↓') : '↕'}</span>
+                                    {sortConfig.field === 'amount' && <span className="ml-1 text-slate-900">{sortConfig.direction === 'asc' ? '↑' : '↓'}</span>}
+                                </th>
+                                <th onClick={() => handleSort('status')} className="px-4 py-3 text-left font-bold text-slate-400 uppercase tracking-wider text-xs cursor-pointer hover:bg-slate-100 transition-colors group">
+                                    Status <span className="invisible group-hover:visible">{sortConfig.field === 'status' ? (sortConfig.direction === 'asc' ? '↑' : '↓') : '↕'}</span>
+                                    {sortConfig.field === 'status' && <span className="ml-1 text-slate-900">{sortConfig.direction === 'asc' ? '↑' : '↓'}</span>}
+                                </th>
+                                <th className="px-4 py-3 text-right font-bold text-slate-400 uppercase tracking-wider text-xs">Action</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                            {getSortedReceipts().map(r => {
+                                const match = matches.find(m => m.receiptId === r.id);
+                                const manualFile = manualFiles[r.id];
+                                const isFound = match?.status === "FOUND" || !!manualFile;
+                                const isMissing = missingIds.has(r.id);
+                                const rowDate = new Date(r.date).toLocaleDateString("en-US", { year: 'numeric', month: 'short', day: 'numeric' });
 
-                    return (
-                        <motion.div
-                            key={mainGroup}
-                            initial={{ opacity: 0, y: 10 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ delay: index * 0.1 }}
-                            className={`bg-white rounded-xl transition-all shadow-sm ${isComplete ? "border border-emerald-500/30 shadow-[0_0_20px_rgba(16,185,129,0.05)]" : isPartial ? "border border-amber-400/30 shadow-[0_0_20px_rgba(251,191,36,0.05)]" : "border border-slate-100"}`}
-                        >
-                            <div
-                                onClick={() => toggleGroup(mainGroup)}
-                                className="p-4 cursor-pointer flex items-center justify-between hover:bg-slate-50 rounded-xl transition-colors group"
-                            >
-                                <div className="flex items-center gap-3">
-                                    <motion.div
-                                        animate={{ rotate: isExpanded ? 90 : 0 }}
-                                        className="w-5 h-5 flex items-center justify-center text-slate-500"
-                                    >
-                                        ▶
-                                    </motion.div>
-                                    <div className="relative">
-                                        <div className={`w-2 h-2 rounded-full ${isComplete ? "bg-emerald-500" : isPartial ? "bg-amber-400" : (isExpanded ? "bg-emerald-500/50" : "bg-slate-200")}`}></div>
-                                        {isComplete && (
-                                            <motion.div
-                                                initial={{ scale: 0 }}
-                                                animate={{ scale: 1 }}
-                                                className="absolute -left-1 -top-1 w-4 h-4 bg-emerald-500 rounded-full flex items-center justify-center shadow-[0_0_10px_rgba(16,185,129,0.5)]"
-                                            >
-                                                <span className="text-[10px] text-white font-bold">✓</span>
-                                            </motion.div>
-                                        )}
-                                        {isPartial && (
-                                            <motion.div
-                                                initial={{ scale: 0 }}
-                                                animate={{ scale: 1 }}
-                                                className="absolute -left-1 -top-1 w-4 h-4 bg-amber-400 rounded-full flex items-center justify-center shadow-[0_0_10px_rgba(251,191,36,0.5)] animate-pulse"
-                                            >
-                                                <span className="text-[10px] text-white font-bold inline-block animate-bounce">!</span>
-                                            </motion.div>
-                                        )}
-                                    </div>
-
-                                    <div className="flex flex-col">
-                                        <div className="flex items-center gap-2">
-                                            <h3 className={`text-base font-bold m-0 ${isComplete ? "text-emerald-600" : isPartial ? "text-amber-600" : "text-slate-900"}`}>{mainGroup}</h3>
-                                        </div>
-                                        {isComplete && <span className="text-[10px] text-emerald-500 text-opacity-80 font-bold uppercase tracking-tight">All found</span>}
-                                        {isPartial && <span className="text-[10px] text-amber-500 text-opacity-80 font-bold uppercase tracking-tight">Partial match</span>}
-                                    </div>
-
-                                    <span className="text-xs text-slate-500 bg-white/5 px-2 py-0.5 rounded-full ml-2">
-                                        {groupFoundCount} / {groupReceipts.length} {groupReceipts.length === 1 ? 'Receipt' : 'Receipts'}
-                                    </span>
-                                </div>
-
-                                <div className="relative" onClick={(e) => e.stopPropagation()}>
-                                    <Button variant="secondary" size="sm" className="text-xs px-4 py-2 h-auto opacity-60 group-hover:opacity-100 transition-opacity border-slate-200">
-                                        Upload for {mainGroup}
-                                    </Button>
-                                    <input
-                                        type="file"
-                                        multiple
-                                        accept="image/*,.pdf"
-                                        onChange={(e) => handleBulkUpload(e.target.files, groupReceipts)}
-                                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                                    />
-                                </div>
-                            </div>
-
-                            <AnimatePresence>
-                                {isExpanded && (
-                                    <motion.div
-                                        initial={{ opacity: 0, height: 0 }}
-                                        animate={{ opacity: 1, height: "auto" }}
-                                        exit={{ opacity: 0, height: 0 }}
-                                        className="overflow-hidden"
-                                    >
-                                        <div className="p-4 pt-0 flex flex-col gap-4 border-t border-slate-100 mt-4">
-                                            {subMerchants.sort().map(merchant => {
-                                                const merchantReceipts = activeReceipts.filter(r => r.merchant === merchant);
-                                                return (
-                                                    <MerchantGroup
-                                                        key={merchant}
-                                                        merchant={merchant}
-                                                        receipts={merchantReceipts}
-                                                        matches={matches}
-                                                        manualFiles={manualFiles}
-                                                        missingIds={missingIds}
-                                                        onFileChange={handleFileChange}
-                                                        onPreview={setPreviewId}
-                                                        onToggleMissing={toggleMissing}
-                                                        onRemoveFile={onRemoveFile}
+                                return (
+                                    <tr key={r.id} className="hover:bg-slate-50 transition-colors">
+                                        <td className="px-4 py-3 font-mono text-slate-500">{rowDate}</td>
+                                        <td className="px-4 py-3 font-bold text-slate-800">{r.merchant}</td>
+                                        <td className="px-4 py-3 font-mono font-bold text-slate-900">
+                                            {r.amount.toFixed(2)} <span className="text-slate-400 text-xs">{r.currency}</span>
+                                        </td>
+                                        <td className="px-4 py-3">
+                                            <StatusBadge status={isMissing ? "MISSING" : (isFound ? "FOUND" : "MISSING")} />
+                                        </td>
+                                        <td className="px-4 py-3 text-right flex items-center justify-end gap-2">
+                                            {isFound ? (
+                                                <Button size="sm" variant="secondary" className="h-8 px-3 text-xs" onClick={() => {
+                                                    if (manualFile) {
+                                                        const type = manualFile.name.endsWith('.pdf') ? 'pdf' : 'image';
+                                                        setPreviewData({ url: URL.createObjectURL(manualFile), type });
+                                                    } else if (match?.storagePath) {
+                                                        onPreview(match.storagePath, 'pdf');
+                                                    }
+                                                }}>
+                                                    Preview
+                                                </Button>
+                                            ) : (
+                                                <div className="relative inline-block">
+                                                    <Button size="sm" variant="secondary" className="h-8 px-3 text-xs">Upload</Button>
+                                                    <input
+                                                        type="file"
+                                                        className="absolute inset-0 opacity-0 cursor-pointer"
+                                                        onChange={(e) => handleFileChange(r.id, e.target.files?.[0] || null)}
                                                     />
-                                                );
-                                            })}
+                                                </div>
+                                            )}
+                                            <button
+                                                onClick={() => toggleMissing(r.id)}
+                                                className={`p-1 rounded hover:bg-slate-200 text-slate-400 hover:text-red-500 transition-colors ${isMissing ? 'text-red-500' : ''}`}
+                                                title={isMissing ? "Restore" : "Mark as Missing"}
+                                            >
+                                                ✕
+                                            </button>
+                                            {isMissing && !r.is_truly_missing && (
+                                                <button
+                                                    onClick={() => setDeclaringReceipt(r)}
+                                                    className="text-[10px] font-bold text-indigo-500 hover:text-indigo-700 bg-indigo-50 px-2 py-1 rounded transition-colors"
+                                                >
+                                                    Formal Declaration
+                                                </button>
+                                            )}
+                                            {r.is_truly_missing && (
+                                                <span className="text-[10px] font-bold text-amber-600 bg-amber-50 px-2 py-1 rounded flex items-center gap-1 border border-amber-100">
+                                                    <CheckCircle2 className="w-3 h-3" />
+                                                    Truly Missing
+                                                </span>
+                                            )}
+                                        </td>
+                                    </tr>
+                                );
+                            })}
+                        </tbody>
+                    </table>
+                </div>
+            ) : (
+                // GROUPED VIEW (Existing)
+                <div className="flex flex-col gap-4">
+                    {sortedGroups.map((mainGroup, index) => {
+                        const groupReceipts = activeReceipts.filter(r => getMerchantHierarchy(r.merchant).main === mainGroup);
+                        const groupFoundCount = groupReceipts.filter(r => {
+                            const status = matches.find(m => m.receiptId === r.id)?.status;
+                            return status === "FOUND" || !!manualFiles[r.id];
+                        }).length;
+                        const isComplete = groupFoundCount === groupReceipts.length && groupReceipts.length > 0;
+                        const isPartial = groupFoundCount > 0 && !isComplete;
+                        const isExpanded = expandedGroups.has(mainGroup);
+                        const subMerchants = groupMap.get(mainGroup) || [];
+
+                        return (
+                            <motion.div
+                                key={mainGroup}
+                                initial={{ opacity: 0, y: 10 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                transition={{ delay: index * 0.1 }}
+                                className={`bg-white rounded-xl transition-all shadow-sm ${isComplete ? "border border-emerald-500/30 shadow-[0_0_20px_rgba(16,185,129,0.05)]" : isPartial ? "border border-amber-400/30 shadow-[0_0_20px_rgba(251,191,36,0.05)]" : "border border-slate-100"}`}
+                            >
+                                <div
+                                    onClick={() => toggleGroup(mainGroup)}
+                                    className="p-4 cursor-pointer flex items-center justify-between hover:bg-slate-50 rounded-xl transition-colors group"
+                                >
+                                    <div className="flex items-center gap-3">
+                                        <motion.div
+                                            animate={{ rotate: isExpanded ? 90 : 0 }}
+                                            className="w-5 h-5 flex items-center justify-center text-slate-500"
+                                        >
+                                            ▶
+                                        </motion.div>
+                                        <div className="relative">
+                                            <div className={`w-2 h-2 rounded-full ${isComplete ? "bg-emerald-500" : isPartial ? "bg-amber-400" : (isExpanded ? "bg-emerald-500/50" : "bg-slate-200")}`}></div>
+                                            {isComplete && (
+                                                <motion.div
+                                                    initial={{ scale: 0 }}
+                                                    animate={{ scale: 1 }}
+                                                    className="absolute -left-1 -top-1 w-4 h-4 bg-emerald-500 rounded-full flex items-center justify-center shadow-[0_0_10px_rgba(16,185,129,0.5)]"
+                                                >
+                                                    <span className="text-[10px] text-white font-bold">✓</span>
+                                                </motion.div>
+                                            )}
+                                            {isPartial && (
+                                                <motion.div
+                                                    initial={{ scale: 0 }}
+                                                    animate={{ scale: 1 }}
+                                                    className="absolute -left-1 -top-1 w-4 h-4 bg-amber-400 rounded-full flex items-center justify-center shadow-[0_0_10px_rgba(251,191,36,0.5)] animate-pulse"
+                                                >
+                                                    <span className="text-[10px] text-white font-bold inline-block animate-bounce">!</span>
+                                                </motion.div>
+                                            )}
                                         </div>
-                                    </motion.div>
-                                )}
-                            </AnimatePresence>
-                        </motion.div>
-                    );
-                })}
-            </div>
+
+                                        <div className="flex flex-col">
+                                            <div className="flex items-center gap-2">
+                                                <h3 className={`text-base font-bold m-0 ${isComplete ? "text-emerald-600" : isPartial ? "text-amber-600" : "text-slate-900"}`}>{mainGroup}</h3>
+                                            </div>
+                                            {isComplete && <span className="text-[10px] text-emerald-500 text-opacity-80 font-bold uppercase tracking-tight">All found</span>}
+                                            {isPartial && <span className="text-[10px] text-amber-500 text-opacity-80 font-bold uppercase tracking-tight">Partial match</span>}
+                                        </div>
+
+                                        <span className="text-xs text-slate-500 bg-white/5 px-2 py-0.5 rounded-full ml-2">
+                                            {groupFoundCount} / {groupReceipts.length} {groupReceipts.length === 1 ? 'Receipt' : 'Receipts'}
+                                        </span>
+                                    </div>
+
+                                    <div className="relative" onClick={(e) => e.stopPropagation()}>
+                                        <Button variant="secondary" size="sm" className="text-xs px-4 py-2 h-auto opacity-60 group-hover:opacity-100 transition-opacity border-slate-200">
+                                            Upload for {mainGroup}
+                                        </Button>
+                                        <input
+                                            type="file"
+                                            multiple
+                                            accept="image/*,.pdf"
+                                            onChange={(e) => handleBulkUpload(e.target.files, groupReceipts)}
+                                            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                                        />
+                                    </div>
+                                </div>
+
+                                <AnimatePresence>
+                                    {isExpanded && (
+                                        <motion.div
+                                            initial={{ opacity: 0, height: 0 }}
+                                            animate={{ opacity: 1, height: "auto" }}
+                                            exit={{ opacity: 0, height: 0 }}
+                                            className="overflow-hidden"
+                                        >
+                                            <div className="p-4 pt-0 flex flex-col gap-4 border-t border-slate-100 mt-4">
+                                                {subMerchants.sort().map(merchant => {
+                                                    const merchantReceipts = activeReceipts.filter(r => r.merchant === merchant);
+                                                    return (
+                                                        <MerchantGroup
+                                                            key={merchant}
+                                                            merchant={merchant}
+                                                            receipts={merchantReceipts}
+                                                            matches={matches}
+                                                            manualFiles={manualFiles}
+                                                            missingIds={missingIds}
+                                                            onFileChange={handleFileChange}
+                                                            onToggleMissing={toggleMissing}
+                                                            onRemoveFile={onRemoveFile}
+                                                            onPreview={(url, type) => setPreviewData({ url, type })}
+                                                            onDeclare={setDeclaringReceipt}
+                                                        />
+                                                    );
+                                                })}
+                                            </div>
+                                        </motion.div>
+                                    )}
+                                </AnimatePresence>
+                            </motion.div>
+                        );
+                    })}
+                </div>
+            )
+            }
 
             {/* MISSING RECEIPTS CARD */}
-            {missingReceiptsList.length > 0 && (
-                <motion.div
-                    initial={{ opacity: 0 }}
-                    whileInView={{ opacity: 1 }}
-                    viewport={{ once: true }}
-                    className="mt-12 border-t border-dashed border-white/10 pt-8"
-                >
-                    <h3 className="text-lg text-slate-400 mb-4 flex items-center gap-2">
-                        <span>⚠️</span> Missing Receipts ({missingReceiptsList.length})
-                    </h3>
-                    <div className="opacity-70 grayscale-[0.5]">
-                        <MerchantGroup
-                            merchant="Lost & Missing Items"
-                            receipts={missingReceiptsList}
-                            matches={matches}
-                            manualFiles={manualFiles}
-                            missingIds={missingIds}
-                            onFileChange={handleFileChange}
-                            onPreview={setPreviewId}
-                            onToggleMissing={toggleMissing}
-                            onRemoveFile={onRemoveFile}
-                        />
-                    </div>
-                </motion.div>
-            )}
+            {
+                missingReceiptsList.length > 0 && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        whileInView={{ opacity: 1 }}
+                        viewport={{ once: true }}
+                        className="mt-12 border-t border-dashed border-white/10 pt-8"
+                    >
+                        <h3 className="text-lg text-slate-400 mb-4 flex items-center gap-2">
+                            <span>⚠️</span> Missing Receipts ({missingReceiptsList.length})
+                        </h3>
+                        <div className="opacity-70 grayscale-[0.5]">
+                            <MerchantGroup
+                                merchant="Matching Invoices"
+                                receipts={missingReceiptsList}
+                                matches={matches}
+                                manualFiles={manualFiles}
+                                missingIds={missingIds}
+                                onFileChange={handleFileChange}
+                                onPreview={(url, type) => setPreviewData({ url, type })}
+                                onToggleMissing={toggleMissing}
+                                onRemoveFile={onRemoveFile}
+                                onDeclare={setDeclaringReceipt}
+                            />
+                        </div>
+                    </motion.div>
+                )
+            }
 
             {/* REAL PDF Preview Modal */}
             <AnimatePresence>
-                {previewId && (
+                {previewData && (
                     <motion.div
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                         exit={{ opacity: 0 }}
-                        className="fixed inset-0 bg-slate-900/90 z-[1100] flex items-center justify-center backdrop-blur-md"
-                        onClick={() => setPreviewId(null)}
+                        className="fixed inset-0 bg-black/90 z-[1100] flex flex-col p-6 animate-in fade-in duration-300"
                     >
-                        <motion.div
-                            initial={{ scale: 0.9, opacity: 0 }}
-                            animate={{ scale: 1, opacity: 1 }}
-                            exit={{ scale: 0.9, opacity: 0 }}
-                            className="w-[95%] h-[90vh] flex flex-col"
-                            onClick={e => e.stopPropagation()}
-                        >
-                            <div className="flex justify-end pb-2">
-                                <button onClick={() => setPreviewId(null)} className="bg-white text-black rounded-full w-8 h-8 font-bold hover:bg-slate-200 transition-colors flex items-center justify-center shadow-lg">✕</button>
-                            </div>
-                            <div className="flex-1 bg-slate-800 rounded-lg overflow-hidden border border-slate-700 shadow-2xl relative">
-                                {previewId.startsWith('blob:') ? (
-                                    <iframe src={previewId} className="w-full h-full border-0" />
-                                ) : (
-                                    <div className="flex items-center justify-center h-full text-white">
-                                        <p>Preview not available for this type (Email/ID only)</p>
-                                    </div>
-                                )}
-                            </div>
-                        </motion.div>
+                        <div className="flex justify-end pb-4">
+                            <button
+                                onClick={() => setPreviewData(null)}
+                                className="bg-white/10 hover:bg-white/20 text-white rounded-full w-10 h-10 font-bold transition-all flex items-center justify-center shadow-xl backdrop-blur-md border border-white/20"
+                            >
+                                ✕
+                            </button>
+                        </div>
+                        <div className="flex-1 bg-white rounded-2xl overflow-hidden shadow-2xl relative border-4 border-white/5">
+                            {previewData.type === 'image' ? (
+                                <div className="w-full h-full flex items-center justify-center bg-slate-100/50">
+                                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                                    <img
+                                        src={previewData.url}
+                                        alt="Receipt Preview"
+                                        className="max-w-full max-h-full object-contain animate-in zoom-in-95 duration-300"
+                                    />
+                                </div>
+                            ) : previewData.type === 'pdf' ? (
+                                <iframe src={previewData.url} className="w-full h-full border-0" />
+                            ) : (
+                                <div className="w-full h-full bg-white p-8 overflow-auto">
+                                    <div dangerouslySetInnerHTML={{ __html: previewData.url }} />
+                                </div>
+                            )}
+                        </div>
                     </motion.div>
                 )}
             </AnimatePresence>
@@ -617,24 +925,25 @@ export const ResultsTable = ({ receipts, matches, autoFoundFiles, activeBatchId,
                                                 {confirmation.mismatchDetails.expected.toFixed(2)} <span className="text-xs">{confirmation.mismatchDetails.currency}</span>
                                             </span>
                                         </div>
-                                        <div className="text-slate-300 text-xl">≠</div>
                                         <div className="flex flex-col text-right">
-                                            <span className="text-[10px] uppercase font-bold text-slate-400">Found in File</span>
-                                            <span className={`text-lg font-bold ${confirmation.mismatchDetails.found === 0 ? 'text-amber-500' : 'text-red-500'}`}>
-                                                {confirmation.mismatchDetails.found > 0 ? confirmation.mismatchDetails.found.toFixed(2) : '???'} <span className="text-xs">{confirmation.mismatchDetails.currency}</span>
+                                            <span className="text-[10px] uppercase font-bold text-slate-400">Found</span>
+                                            <span className="text-lg font-bold text-amber-600">
+                                                {confirmation.mismatchDetails.found.toFixed(2)} <span className="text-xs">{confirmation.mismatchDetails.currency}</span>
                                             </span>
                                         </div>
                                     </div>
                                 )}
 
-                                <div className="flex gap-3 justify-end">
-                                    <Button variant="secondary" onClick={cancelAction} className="border-slate-200">Cancel</Button>
+                                <div className="flex justify-end gap-3">
+                                    <Button variant="secondary" onClick={cancelAction} className="border-slate-200">
+                                        Cancel
+                                    </Button>
                                     <Button
                                         variant="primary"
-                                        className={`${confirmation.type === 'MISMATCH' ? 'bg-amber-500 hover:bg-amber-600 shadow-amber-500/20' : 'bg-red-500 hover:bg-red-600 shadow-red-500/20'} border-0 shadow-lg rounded-xl text-white`}
                                         onClick={confirmAction}
+                                        className={`${confirmation.type === 'REMOVE' ? 'bg-red-500 hover:bg-red-600 shadow-red-500/20' : 'bg-emerald-500 hover:bg-emerald-600 shadow-emerald-500/20'} text-white border-0`}
                                     >
-                                        {confirmation.type === 'MISMATCH' ? 'Assign Anyway' : 'Confirm'}
+                                        {confirmation.type === 'REMOVE' ? 'Remove' : 'Confirm'}
                                     </Button>
                                 </div>
                             </Card>
@@ -643,20 +952,70 @@ export const ResultsTable = ({ receipts, matches, autoFoundFiles, activeBatchId,
                 )}
             </AnimatePresence>
 
-            {showShareModal && (
-                <ShareModal
-                    isOpen={showShareModal}
-                    onClose={() => setShowShareModal(false)}
-                    batchId={activeBatchId || undefined}
-                />
-            )}
+            {/* Delete Confirmation Modal */}
+            <AnimatePresence>
+                {showDeleteModal && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm"
+                    >
+                        <motion.div
+                            initial={{ scale: 0.95, opacity: 0 }}
+                            animate={{ scale: 1, opacity: 1 }}
+                            exit={{ scale: 0.95, opacity: 0 }}
+                            className="w-full max-w-md"
+                        >
+                            <Card className="p-8 bg-white shadow-2xl border-0 ring-1 ring-slate-200 text-center">
+                                <div className="w-20 h-20 bg-red-50 rounded-full flex items-center justify-center mx-auto mb-6">
+                                    <Trash2 className="w-10 h-10 text-red-500" />
+                                </div>
+                                <h3 className="text-2xl font-black text-slate-900 mb-2">Delete Project?</h3>
+                                <p className="text-slate-500 mb-8 leading-relaxed">
+                                    This will permanently delete all identified receipts, matches, and uploaded files for this hunt. This action cannot be undone.
+                                </p>
+                                <div className="grid grid-cols-2 gap-4">
+                                    <Button
+                                        variant="secondary"
+                                        onClick={() => setShowDeleteModal(false)}
+                                        className="py-4 rounded-xl font-bold border-slate-200"
+                                    >
+                                        Cancel
+                                    </Button>
+                                    <Button
+                                        variant="primary"
+                                        onClick={executeDelete}
+                                        className="bg-red-500 hover:bg-red-600 text-white py-4 rounded-xl font-bold shadow-xl shadow-red-500/20 border-0"
+                                    >
+                                        Delete Everything
+                                    </Button>
+                                </div>
+                            </Card>
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
 
-            {showTeamModal && (
-                <TeamSettingsModal
-                    isOpen={showTeamModal}
-                    onClose={() => setShowTeamModal(false)}
-                />
-            )}
-        </motion.div>
+            {/* Share & Team Modals */}
+            <ShareModal
+                isOpen={showShareModal}
+                onClose={() => setShowShareModal(false)}
+                batchId={activeBatchId || undefined}
+            />
+            <TeamSettingsModal
+                isOpen={showTeamModal}
+                onClose={() => setShowTeamModal(false)}
+            />
+
+            <MissingReceiptModal
+                isOpen={!!declaringReceipt}
+                onClose={() => setDeclaringReceipt(null)}
+                onConfirm={handleTrulyMissing}
+                merchant={declaringReceipt?.merchant || ""}
+                amount={declaringReceipt?.amount || 0}
+                currency={declaringReceipt?.currency || "EUR"}
+            />
+        </motion.div >
     );
 };

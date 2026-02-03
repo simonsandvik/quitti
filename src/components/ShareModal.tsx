@@ -30,7 +30,14 @@ export const ShareModal = ({ isOpen, onClose, batchId }: ShareModalProps) => {
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || "Failed to create link");
 
-            setShareUrl(data.url);
+            let url = data.url;
+            if (url && !url.startsWith('http')) {
+                url = `${window.location.origin}${url.startsWith('/') ? '' : '/'}${url}`;
+            } else if (url && url.includes('localhost') && !window.location.href.includes('localhost')) {
+                url = url.replace(/https?:\/\/localhost:[0-9]+/, window.location.origin);
+            }
+
+            setShareUrl(url);
         } catch (e: any) {
             setError(e.message);
         } finally {

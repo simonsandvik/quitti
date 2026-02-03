@@ -89,7 +89,9 @@ export async function GET(req: Request, props: { params: Promise<{ token: string
 
             return {
                 ...r,
-                downloadUrl
+                downloadUrl,
+                matchedHtml: match?.matched_html,
+                matchedData: match?.matched_data
             };
         }));
 

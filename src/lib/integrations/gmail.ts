@@ -217,31 +217,63 @@ export const searchGmail = async (
 
 export const getGmailAttachment = async (accessToken: string, messageId: string, attachmentId: string): Promise<Blob | null> => {
     try {
+        console.log(`[Gmail Attach] Fetching attachment: ${attachmentId} from message: ${messageId}`);
+
         const res = await fetch(`${GMAIL_API_BASE}/messages/${messageId}/attachments/${attachmentId}`, {
             headers: { Authorization: `Bearer ${accessToken}` }
         });
 
-        if (!res.ok) return null;
+        if (!res.ok) {
+            console.error(`[Gmail Attach] HTTP Error: ${res.status} ${res.statusText}`);
+            return null;
+        }
 
         const data = await res.json();
 
         if (!data.data) {
-            console.warn("Gmail attachment has no data field", data);
+            console.warn("[Gmail Attach] Response has no 'data' field:", data);
             return null;
         }
 
-        // data.data is base64url encoded
-        const base64 = data.data.replace(/-/g, '+').replace(/_/g, '/');
+        console.log(`[Gmail Attach] Raw base64url data length: ${data.data.length} chars`);
 
-        const byteCharacters = atob(base64);
-        const byteNumbers = new Array(byteCharacters.length);
-        for (let i = 0; i < byteCharacters.length; i++) {
-            byteNumbers[i] = byteCharacters.charCodeAt(i);
+        if (data.data.length < 100) {
+            console.error("[Gmail Attach] CRITICAL: Data too short, likely corrupt or empty");
+            return null;
         }
-        const byteArray = new Uint8Array(byteNumbers);
-        return new Blob([byteArray]);
+
+        // Convert base64url to standard base64
+        let base64 = data.data.replace(/-/g, '+').replace(/_/g, '/');
+
+        // Add proper padding if needed
+        while (base64.length % 4 !== 0) {
+            base64 += '=';
+        }
+
+        // Use Uint8Array directly for binary data
+        const binaryString = atob(base64);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+        }
+
+        console.log(`[Gmail Attach] Decoded to ${bytes.length} bytes`);
+
+        if (bytes.length < 100) {
+            console.error("[Gmail Attach] CRITICAL: Decoded bytes too small, file is likely corrupt");
+            return null;
+        }
+
+        // Check for PDF magic bytes (optional validation)
+        const isPdf = bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46; // %PDF
+        console.log(`[Gmail Attach] Is PDF: ${isPdf}`);
+
+        const blob = new Blob([bytes], { type: isPdf ? 'application/pdf' : 'application/octet-stream' });
+        console.log(`[Gmail Attach] Created Blob: ${blob.size} bytes, type: ${blob.type}`);
+
+        return blob;
     } catch (e) {
-        console.error("Attachment fetch failed", e);
+        console.error("[Gmail Attach] Failed to fetch/decode attachment:", e);
         return null;
     }
 };

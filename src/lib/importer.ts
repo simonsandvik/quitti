@@ -1,4 +1,5 @@
 import * as XLSX from 'xlsx';
+import { v4 as uuidv4 } from 'uuid';
 
 export interface RawData {
     rows: string[][];
@@ -294,7 +295,7 @@ export function normalizeData(
 
         if (date && !isNaN(amount)) {
             normalized.push({
-                id: `row-${i}-${Date.now()}`,
+                id: uuidv4(),
                 date: date.toISOString().split('T')[0],
                 merchant: merchant.trim() || 'Unknown Entity',
                 amount: Math.abs(amount),

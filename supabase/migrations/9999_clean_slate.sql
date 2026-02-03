@@ -88,6 +88,8 @@ CREATE TABLE public.receipt_requests (
   currency TEXT DEFAULT 'EUR',
   date DATE,
   status TEXT DEFAULT 'pending',
+  is_truly_missing BOOLEAN DEFAULT FALSE,
+  missing_reason TEXT,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 

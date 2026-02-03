@@ -3,6 +3,7 @@
 import React from "react";
 import { Button } from "./ui/Button";
 import { StatusBadge } from "./StatusBadge";
+import { CheckCircle2 } from "lucide-react";
 import { MatchResult } from "@/lib/matcher";
 import { ReceiptRequest } from "@/lib/parser";
 
@@ -13,9 +14,10 @@ interface MerchantGroupProps {
     manualFiles: Record<string, File>;
     missingIds: Set<string>;
     onFileChange: (id: string, file: File | null) => void;
-    onPreview: (id: string) => void;
+    onPreview: (url: string, type: 'pdf' | 'image' | 'html') => void;
     onToggleMissing: (id: string) => void;
     onRemoveFile: (id: string) => void;
+    onDeclare: (receipt: ReceiptRequest) => void;
 }
 
 export const MerchantGroup = ({
@@ -27,7 +29,8 @@ export const MerchantGroup = ({
     onFileChange,
     onPreview,
     onToggleMissing,
-    onRemoveFile
+    onRemoveFile,
+    onDeclare
 }: MerchantGroupProps) => {
     const sortedReceipts = [...receipts].sort((a, b) => b.date.localeCompare(a.date));
 
@@ -107,71 +110,84 @@ export const MerchantGroup = ({
                                     <td className="p-3 text-right">
                                         <div className="flex gap-2 justify-end items-center opacity-80 group-hover:opacity-100 transition-opacity">
                                             {isMissing ? (
-                                                <Button variant="secondary" size="sm" className="h-auto py-1 px-2 text-[10px] border-slate-200" onClick={() => onToggleMissing(req.id)}>
-                                                    Restore
-                                                </Button>
+                                                <div className="flex items-center gap-2">
+                                                    <Button variant="secondary" size="sm" className="h-auto py-1 px-2 text-[10px] border-slate-200" onClick={() => onToggleMissing(req.id)}>
+                                                        Restore
+                                                    </Button>
+                                                    {!req.is_truly_missing && (
+                                                        <button
+                                                            onClick={() => onDeclare(req)}
+                                                            className="text-[10px] font-bold text-indigo-500 hover:text-indigo-700 bg-indigo-50 px-2 py-1 rounded transition-colors"
+                                                        >
+                                                            Formal Declaration
+                                                        </button>
+                                                    )}
+                                                    {req.is_truly_missing && (
+                                                        <span className="text-[10px] font-bold text-amber-600 bg-amber-50 px-2 py-1 rounded flex items-center gap-1 border border-amber-100">
+                                                            <CheckCircle2 className="w-3 h-3" />
+                                                            Truly Missing
+                                                        </span>
+                                                    )}
+                                                </div>
                                             ) : ( /* Normal Actions */
                                                 <>
                                                     {status === "FOUND" ? (
                                                         <>
-                                                            <Button variant="secondary" size="sm" className="h-auto py-1 px-2 text-[10px] bg-white hover:bg-slate-50 text-slate-700 border-slate-200" onClick={() => {
-                                                                if (manualFile) {
-                                                                    onPreview(URL.createObjectURL(manualFile));
-                                                                } else if (match?.matchedHtml) {
-                                                                    // Preview HTML if no file yet
-                                                                    const blob = new Blob([match.matchedHtml], { type: 'text/html' });
-                                                                    onPreview(URL.createObjectURL(blob));
-                                                                } else {
-                                                                    // For email/auto matches, passed ID
-                                                                    onPreview(req.id);
-                                                                }
-                                                            }}>Preview</Button>
+                                                            {/* Download Action */}
+                                                            {(manualFile || match?.storagePath) ? (
+                                                                <Button variant="secondary" size="sm" className="h-auto py-1 px-2 text-[10px] bg-white hover:bg-slate-50 text-slate-700 border-slate-200" onClick={async () => {
+                                                                    if (manualFile) {
+                                                                        const type = manualFile.type.includes('pdf') ? 'pdf' : 'image';
+                                                                        onPreview(URL.createObjectURL(manualFile), type);
+                                                                    } else if (match?.storagePath) {
+                                                                        try {
+                                                                            const { getSignedUrlServerAction } = await import("@/app/actions");
+                                                                            const signedUrl = await getSignedUrlServerAction(match.storagePath);
+                                                                            const type = match.storagePath.toLowerCase().endsWith('.pdf') ? 'pdf' : 'image';
+                                                                            onPreview(signedUrl, type);
+                                                                        } catch (err) {
+                                                                            console.error("Failed to get signed URL", err);
+                                                                            alert("Failed to open preview. Please try again.");
+                                                                        }
+                                                                    }
+                                                                }}>
+                                                                    {(manualFile?.type.includes('pdf') || match?.storagePath?.toLowerCase().endsWith('.pdf')) ? 'View PDF' : 'View Image'}
+                                                                </Button>
+                                                            ) : (
+                                                                /* Preview (HTML) Action */
+                                                                <Button variant="secondary" size="sm" className="h-auto py-1 px-2 text-[10px] bg-white hover:bg-slate-50 text-slate-700 border-slate-200" onClick={() => {
+                                                                    if (match?.matchedHtml) {
+                                                                        onPreview(match.matchedHtml, 'html');
+                                                                    }
+                                                                }}>Preview</Button>
+                                                            )}
 
-                                                            {/* PDF Generation Button */}
-                                                            {!manualFile && match?.matchedHtml && (
+                                                            {/* Generation Action (Only if no file yet but we have HTML) */}
+                                                            {!manualFile && !match?.storagePath && match?.matchedHtml && (
                                                                 <Button
                                                                     variant="secondary"
                                                                     size="sm"
                                                                     className="h-auto py-1 px-2 text-[10px] bg-emerald-500 hover:bg-emerald-600 text-white border-0 rounded-lg shadow-sm"
                                                                     onClick={async (e) => {
                                                                         e.stopPropagation();
-                                                                        const { default: html2pdf } = await import("html2pdf.js");
-                                                                        const element = document.createElement("div");
-                                                                        element.innerHTML = match.matchedHtml || "";
-                                                                        // Basic styling for the receipt
-                                                                        element.style.padding = "40px";
-                                                                        element.style.fontFamily = "sans-serif";
-
-                                                                        const opt = {
-                                                                            margin: 10,
-                                                                            filename: `${req.date}_${req.merchant}_${req.amount}.pdf`,
-                                                                            image: { type: 'jpeg' as const, quality: 0.98 },
-                                                                            html2canvas: { scale: 2 },
-                                                                            jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' as const }
-                                                                        };
-
-                                                                        // @ts-ignore
-                                                                        html2pdf().set(opt).from(element).outputPdf('blob').then((blob: Blob) => {
-                                                                            const file = new File([blob], opt.filename, { type: "application/pdf" });
+                                                                        try {
+                                                                            const { htmlToPdfBlob } = await import("@/lib/pdf");
+                                                                            const blob = await htmlToPdfBlob(match.matchedHtml || "");
+                                                                            const filename = `${req.date}_${req.merchant}_${req.amount}.pdf`;
+                                                                            const file = new File([blob], filename, { type: "application/pdf" });
                                                                             onFileChange(req.id, file); // Save as if manual file
-                                                                        });
+                                                                        } catch (err) {
+                                                                            console.error("Manual PDF generation failed", err);
+                                                                            alert("Failed to generate PDF. Please try again.");
+                                                                        }
                                                                     }}
                                                                 >
                                                                     📄 Make PDF
                                                                 </Button>
                                                             )}
-
-                                                            {manualFile && (
-                                                                <button
-                                                                    onClick={() => onRemoveFile(req.id)}
-                                                                    title="Remove File"
-                                                                    className="bg-none border-0 cursor-pointer text-sm text-red-500 hover:text-red-600 px-1 font-bold"
-                                                                >
-                                                                    ✕
-                                                                </button>
-                                                            )}
                                                         </>
                                                     ) : (
+                                                        /* NOT FOUND Actions */
                                                         <div className="relative inline-block">
                                                             <Button variant="secondary" size="sm" className="h-auto py-1 px-2 text-[10px] border-slate-200 hover:bg-slate-50">
                                                                 Upload
@@ -184,6 +200,7 @@ export const MerchantGroup = ({
                                                             />
                                                         </div>
                                                     )}
+                                                    {/* Missing Toggle (only if not found) */}
 
                                                     {/* Missing Toggle (only if not found) */}
                                                     {status !== "FOUND" && (
@@ -204,7 +221,7 @@ export const MerchantGroup = ({
                         })}
                     </tbody>
                 </table>
-            </div>
-        </div>
+            </div >
+        </div >
     );
 };

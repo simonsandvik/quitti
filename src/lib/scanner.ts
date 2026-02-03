@@ -45,10 +45,12 @@ export const scanEmails = async (
     onProgress?: (status: string, percentage: number, foundCount: number, pdfCount: number) => void,
     userId?: string
 ): Promise<{ matches: MatchResult[], candidates: EmailCandidate[], files: Record<string, File> }> => {
+    console.log(`[Diagnostic] scanEmails starting for ${requests.length} receipts.`);
 
     let allCandidates: EmailCandidate[] = [];
     const files: Record<string, File> = {};
     const matches: MatchResult[] = [];
+    const foundIds = new Set<string>();
     let foundCount = 0;
     let pdfCount = 0;
 
@@ -117,7 +119,8 @@ export const scanEmails = async (
 
                 if (result.confidence > 0) {
                     if (result.status === "FOUND") {
-                        if (files[req.id]) return;
+                        if (foundIds.has(req.id)) return;
+                        foundIds.add(req.id);
 
                         // Content Verification will determine if we push this match
                         // matches.push(result);
@@ -281,7 +284,12 @@ export const scanEmails = async (
                     const customers = await listAccessibleCustomers(token, developerToken);
                     console.log(`[GoogleAds] Found ${customers.length} accessible customers`);
 
-                    for (const customerResourceName of customers) {
+                    for (let i = 0; i < customers.length; i++) {
+                        const customerResourceName = customers[i];
+                        // Calculate progress for this sub-step
+                        const progressPerCustomer = requests.length / customers.length;
+                        currentProgressCount = Math.floor(i * progressPerCustomer);
+                        updateProgress(`Checking Google Ads (${i + 1}/${customers.length})...`, currentProgressCount);
                         // customerResourceName is like "customers/1234567890"
                         // We need to fetch invoices for this customer
                         // API needs the 10-digit ID.
@@ -297,7 +305,7 @@ export const scanEmails = async (
                                 const invDate = new Date(inv.issueDate); // YYYY-MM-DD
 
                                 const match = requests.find(r => {
-                                    if (files[r.id]) return false;
+                                    if (foundIds.has(r.id)) return false;
 
                                     // Amount Check
                                     const diff = Math.abs(r.amount - invAmount);
@@ -336,6 +344,7 @@ export const scanEmails = async (
                                             foundCount++;
                                             pdfCount++;
 
+                                            foundIds.add(match.id);
                                             matches.push({
                                                 receiptId: match.id,
                                                 emailId: `google-ads-${inv.id}`,
@@ -377,7 +386,11 @@ export const scanEmails = async (
                 const subs = await listSubscriptions(token);
                 console.log(`[Azure] Found ${subs.length} subscriptions`);
 
-                for (const sub of subs) {
+                for (let i = 0; i < subs.length; i++) {
+                    const sub = subs[i];
+                    const progressPerSub = requests.length / Math.max(1, subs.length);
+                    currentProgressCount = Math.floor(i * progressPerSub);
+                    updateProgress(`Checking Azure Billing (${i + 1}/${subs.length})...`, currentProgressCount);
                     if (sub.state !== 'Enabled') continue;
 
                     try {
@@ -390,7 +403,7 @@ export const scanEmails = async (
                             const invDate = new Date(inv.properties.invoicePeriodEndDate);
 
                             const match = requests.find(r => {
-                                if (files[r.id]) return false;
+                                if (foundIds.has(r.id)) return false;
 
                                 // Amount Check
                                 const diff = Math.abs(r.amount - invAmount);
@@ -408,6 +421,7 @@ export const scanEmails = async (
 
                             if (match) {
                                 console.log(`[Azure] Matched Invoice ${inv.name} to Request ${match.merchant} (${match.amount})`);
+                                foundIds.add(match.id);
 
                                 // Get PDF URL
                                 let pdfUrl = inv.properties.downloadUrl?.url;
@@ -460,44 +474,175 @@ export const scanEmails = async (
             updateProgress(`Checking Meta Ads...`, completedSteps + currentProgressCount);
             console.log("[Scanner] checking Meta Ads API...");
             try {
-                const { listAdAccounts, listAdAccountTransactions, downloadMetaFile } = await import("./meta-ads");
+                const { listAdAccounts, listAdAccountTransactions, listBusinessInvoices, listAdAccountBillingActivities, downloadMetaFile } = await import("./meta-ads");
 
                 const accounts = await listAdAccounts(token);
                 console.log(`[Meta] Found ${accounts.length} ad accounts`);
 
-                for (const account of accounts) {
+                const scannedBusinessIds = new Set<string>();
+
+                for (let i = 0; i < accounts.length; i++) {
+                    const account = accounts[i];
+                    const progressPerAccount = requests.length / Math.max(1, accounts.length);
+                    currentProgressCount = Math.floor(i * progressPerAccount);
+                    updateProgress(`Checking Meta Ads (${i + 1}/${accounts.length})...`, currentProgressCount);
                     try {
-                        // Transactions often contain invoice IDs and amounts
-                        const transactions = await listAdAccountTransactions(token, account.id);
+                        const accAny = account as any;
+                        let sinceTimestamp: number | undefined = undefined;
+                        if (requests.length > 0) {
+                            const dates = requests.map(r => new Date(r.date).getTime());
+                            const minDate = Math.min(...dates);
+                            const buffer = 30 * 24 * 60 * 60 * 1000;
+                            sinceTimestamp = Math.floor((minDate - buffer) / 1000);
+                        }
+
+                        // Primary: Fetch Transactions
+                        const transactions = await listAdAccountTransactions(token, account.id, sinceTimestamp, 500);
                         console.log(`[Meta] Found ${transactions.length} transactions for ${account.name}`);
 
+                        // Fallback 1: Business Invoices
+                        if (transactions.length === 0 && accAny.business && accAny.business.id) {
+                            if (!scannedBusinessIds.has(accAny.business.id)) {
+                                scannedBusinessIds.add(accAny.business.id);
+
+                                let fromDate: string | undefined = undefined;
+                                if (requests.length > 0 && sinceTimestamp) {
+                                    fromDate = new Date(sinceTimestamp * 1000).toISOString().split('T')[0];
+                                }
+
+                                console.log(`[Meta] 0 Transactions found. Scanning Business ID: ${accAny.business.id} (From: ${fromDate || 'Default'})`);
+
+                                const invoices = await listBusinessInvoices(token, accAny.business.id, fromDate);
+                                console.log(`[Meta] Found ${invoices.length} Business Invoices`);
+
+                                for (const inv of invoices) {
+                                    transactions.push({
+                                        id: inv.id,
+                                        time: new Date(inv.issue_date).getTime() / 1000,
+                                        amount: inv.total_amount?.amount,
+                                        currency: inv.total_amount?.currency,
+                                        billing_reason: 'INVOICE_PDF',
+                                        invoice_id: inv.invoice_id,
+                                        download_uri: inv.download_uri
+                                    });
+                                }
+                            }
+                        }
+
+                        // Fallback 2: Billing Activities (Credit Card Charges)
+                        if (transactions.length === 0) {
+                            console.log(`[Meta] Still 0 transactions. Trying Billing Activities for ${account.name}...`);
+                            const billingActivities = await listAdAccountBillingActivities(token, account.id, sinceTimestamp);
+
+                            for (const activity of billingActivities) {
+                                let amount = "0";
+                                let currency = "USD";
+
+                                try {
+                                    if (activity.extra_data) {
+                                        const extra = typeof activity.extra_data === 'string'
+                                            ? JSON.parse(activity.extra_data)
+                                            : activity.extra_data;
+
+                                        // Only process if it looks like a payment amount (numeric new_value)
+                                        // "new_value" in activities is typically in cents/base units (e.g. 262 for 2.62 EUR)
+                                        if (extra.new_value !== undefined && extra.new_value !== null && typeof extra.new_value === 'number') {
+                                            amount = (extra.new_value / 100).toFixed(2);
+                                        }
+                                        if (extra.currency) currency = extra.currency;
+                                    }
+                                } catch (e) {
+                                    // Ignore parsing errors for non-JSON extra_data
+                                }
+
+                                // Skip if amount is 0 (likely a status change or non-monetary event)
+                                if (amount === "0" || amount === "0.00") continue;
+
+                                const eventTime = new Date(activity.event_time).getTime() / 1000;
+
+                                transactions.push({
+                                    id: activity.id || `activity-${eventTime}`,
+                                    time: eventTime,
+                                    amount: amount,
+                                    currency: currency,
+                                    billing_reason: activity.translated_event_type || 'BILLING_CHARGE'
+                                });
+                            }
+                            console.log(`[Meta] Added ${transactions.length} valid billing transactions from activities`);
+                        }
+
+                        if (transactions.length > 0) {
+                            console.log(`[Meta Debug] Scanning ${transactions.length} transactions against ${requests.length} requests`);
+                            if (requests.length > 0) {
+                                console.log(`[Meta Debug] Request 0: ${requests[0].merchant} - ${requests[0].amount} ${requests[0].currency} (${requests[0].date})`);
+                            }
+                        }
+
                         for (const tx of transactions) {
-                            const txAmount = Math.abs(parseFloat(tx.amount?.amount || "0"));
+                            const rawAmount = tx.amount?.amount || tx.amount || "0";
+                            const txAmount = Math.abs(parseFloat(rawAmount));
                             const txDate = new Date(tx.time * 1000);
 
                             const match = requests.find(r => {
-                                if (files[r.id]) return false;
+                                if (foundIds.has(r.id)) return false;
 
-                                // Amount Check
                                 const diff = Math.abs(r.amount - txAmount);
-                                const isAmountMatch = diff < 0.05;
-
-                                // Date Check (Month/Year)
+                                const isAmountMatch = diff < 0.10; // Tighter tolerance: 10 cents for tax rounding
                                 const reqDate = new Date(r.date);
                                 const isDateMatch = reqDate.getMonth() === txDate.getMonth() && reqDate.getFullYear() === txDate.getFullYear();
 
-                                // Merchant "Facebook" or "Meta"
-                                const isMerchantMatch = r.merchant.toLowerCase().includes("facebook") || r.merchant.toLowerCase().includes("meta");
+                                // Strict merchant check - must be Meta/Facebook specific
+                                const mLower = r.merchant.toLowerCase().replace(/[\.\s]/g, '');
+                                const isMerchantMatch = mLower.includes("facebook") || mLower.includes("meta") || mLower.includes("facebk") || mLower.includes("fbme");
+                                // Note: Removed "ads" - too generic, matched Google!
 
-                                return isAmountMatch && (isDateMatch || isMerchantMatch);
+                                // Log potential matches for debugging
+                                if (isAmountMatch && isMerchantMatch) {
+                                    console.log(`[Meta Match Debug]
+                                         Tx: ${txAmount} ${tx.currency} (Date: ${txDate.toISOString().split('T')[0]})
+                                         Req: ${r.amount} ${r.currency} (Date: ${r.date})
+                                         Diff: ${diff.toFixed(2)}
+                                         Match? Amount: ${isAmountMatch}, Date: ${isDateMatch}, Merchant: ${isMerchantMatch}
+                                     `);
+                                }
+
+                                // MUST match merchant AND (date OR close amount)
+                                return isMerchantMatch && isAmountMatch && isDateMatch;
                             });
 
                             if (match) {
-                                console.log(`[Meta] Matched Transaction ${tx.id} to Request ${match.merchant} (${match.amount})`);
+                                console.log(`[Meta] Matched Transaction ${tx.id}`);
+                                foundIds.add(match.id);
 
-                                // Meta rarely gives a direct PDF URL for transactions via API, 
-                                // but if it does (not in current transactions fields but maybe invoices)
-                                // For now, we report the match. If we find a way to get the PDF, we'll download it.
+                                // Generate PDF Receipt since Meta API often doesn't provide a direct link for activities
+                                if (!files[match.id]) {
+                                    try {
+                                        updateProgress(`Generating Receipt for ${match.merchant}...`, completedSteps + currentProgressCount);
+                                        const { generateMetaReceiptPdf } = await import("./receipt-generator");
+                                        const blob = await generateMetaReceiptPdf({
+                                            id: tx.id,
+                                            date: txDate,
+                                            amount: tx.amount,
+                                            currency: tx.currency || "USD",
+                                            merchant: "Meta Ads", // Standardized name
+                                            account_name: account.name,
+                                            account_id: account.id,
+                                            billing_reason: tx.billing_reason || "Ad Billing"
+                                        });
+
+                                        if (blob) {
+                                            console.log(`[Meta Debug] Generated Blob Size: ${blob.size}, Type: ${blob.type}`);
+                                            const fileName = `Meta_Receipt_${tx.id}.pdf`;
+                                            const file = new File([blob], fileName, { type: "application/pdf" });
+                                            files[match.id] = file;
+                                            foundCount++;
+                                            pdfCount++;
+                                            console.log(`[Meta] Generated PDF for ${match.merchant}`);
+                                        }
+                                    } catch (e) {
+                                        console.error(`[Meta] Failed to generate PDF for ${tx.id}`, e);
+                                    }
+                                }
 
                                 matches.push({
                                     receiptId: match.id,
@@ -505,10 +650,19 @@ export const scanEmails = async (
                                     status: "FOUND",
                                     confidence: 100,
                                     details: `Direct Meta Ads API Match (ID: ${tx.id})`,
-                                    matchedHtml: `<div>Meta Transaction Match: ${tx.billing_reason || 'Billing'}</div>`
+                                    matchedHtml: `<div>Meta Transaction Match: ${tx.billing_reason || 'Billing'}</div>`,
+                                    // @ts-ignore
+                                    matchedData: {
+                                        id: tx.id,
+                                        date: txDate,
+                                        amount: tx.amount,
+                                        currency: tx.currency || "USD",
+                                        merchant: "Meta Ads",
+                                        account_name: account.name,
+                                        account_id: account.id,
+                                        billing_reason: tx.billing_reason || "Ad Billing"
+                                    }
                                 });
-
-                                // Note: pdfCount won't increment unless we find a download_uri
                             }
                         }
                     } catch (e) {
@@ -519,6 +673,7 @@ export const scanEmails = async (
                 console.error("[Meta] Scan Failed", e);
             }
         }
+
 
         // Attach session info to candidates for later fetching
         if (provider && token) {
@@ -557,6 +712,7 @@ export const scanEmails = async (
         }
     }
 
+    console.log(`[Diagnostic] scanEmails finished. Found: ${foundCount}, Pdfs: ${pdfCount}`);
     onProgress?.("Finalizing results...", 100, foundCount, pdfCount);
     return { matches, candidates, files };
 };
