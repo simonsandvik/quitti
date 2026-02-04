@@ -46,6 +46,8 @@ export default function Home() {
 
   // Ref to track previous session count for detecting new OAuth sessions
   const prevSessionCount = useRef<number>(0);
+  // Ref to track if we are actively searching to prevent cloud sync from overwriting state
+  const isSearchingRef = useRef<boolean>(false);
   const [pendingAutoSearch, setPendingAutoSearch] = useState<boolean>(false);
 
   // Load receipts & sessions from localStorage on mount
@@ -117,6 +119,12 @@ export default function Home() {
 
           if (batches && batches.length > 0) {
             const batchId = batches[0].id;
+
+            // RACE CONDITION FIX: check ref instead of state
+            if (isSearchingRef.current) {
+              console.log("[Cloud] Skipping cloud load - active search in progress (Locked)");
+              return;
+            }
 
             // If we already have a batch ID from triggerSearch, don't overwrite if it's different and we are in active scan
             if (activeBatchId && activeBatchId !== batchId && (step === "searching" || step === "results")) {
@@ -294,6 +302,9 @@ export default function Home() {
     console.log(`[Diagnostic] triggerSearch called. Sessions: ${sessions.length}, Receipts: ${receipts.length}`);
     sessions.forEach((s, i) => console.log(`  Session ${i}: ${s.user?.email} (${(s as any).provider})`));
 
+    // LOCK: Prevent cloud sync from interfering
+    isSearchingRef.current = true;
+
     setStep("searching");
     setSearchStatus("Starting scan...");
     setSearchProgress(0);
@@ -302,6 +313,7 @@ export default function Home() {
     if (receipts.length === 0) {
       console.error("[Diagnostic] TriggerSearch: receipts array is empty!");
       setStep("results");
+      isSearchingRef.current = false; // Unlock
       return;
     }
     try {
@@ -355,6 +367,7 @@ export default function Home() {
         } catch (e) {
           console.error("[Cloud] Failed to sync batch/requests - matches won't be saved to cloud", e);
           setStep("results");
+          isSearchingRef.current = false; // Unlock
           return;
         }
 
@@ -407,9 +420,12 @@ export default function Home() {
 
       setSearchStatus("Finalizing results...");
       setStep("results");
+      // Unlock happens implicitly as we leave searching state, but good practice to reset
+      isSearchingRef.current = false;
     } catch (err) {
       console.error(err);
       setStep("results");
+      isSearchingRef.current = false;
     }
   }, [sessions, receipts, status, session, activeBatchId]);
 
