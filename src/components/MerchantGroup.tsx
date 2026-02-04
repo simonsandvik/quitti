@@ -3,7 +3,7 @@
 import React from "react";
 import { Button } from "./ui/Button";
 import { StatusBadge } from "./StatusBadge";
-import { CheckCircle2 } from "lucide-react";
+import { CheckCircle2, Trash2 } from "lucide-react";
 import { MatchResult } from "@/lib/matcher";
 import { ReceiptRequest } from "@/lib/parser";
 
@@ -185,6 +185,14 @@ export const MerchantGroup = ({
                                                                     📄 Make PDF
                                                                 </Button>
                                                             )}
+                                                            {/* Remove Action */}
+                                                            <button
+                                                                onClick={() => onRemoveFile(req.id)}
+                                                                className="p-1 rounded hover:bg-slate-100 text-slate-300 hover:text-red-500 transition-colors ml-2"
+                                                                title="Remove File / Unassign"
+                                                            >
+                                                                <Trash2 className="w-3 h-3" />
+                                                            </button>
                                                         </>
                                                     ) : (
                                                         /* NOT FOUND Actions */

@@ -160,6 +160,22 @@ export async function updateMatchResult(requestId: string, match: MatchResult, u
         .eq('id', requestId);
 }
 
+export async function removeMatchResult(requestId: string) {
+    // 1. Delete the match record
+    const { error } = await supabase
+        .from('matched_receipts')
+        .delete()
+        .eq('request_id', requestId);
+
+    if (error) throw error;
+
+    // 2. Reset request status to pending
+    await supabase
+        .from('receipt_requests')
+        .update({ status: 'pending' })
+        .eq('id', requestId);
+}
+
 export async function getUserBatches(userId: string) {
     const { data, error } = await supabase
         .from('batches')

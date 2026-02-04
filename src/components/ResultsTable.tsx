@@ -8,8 +8,9 @@ import { Card } from "./ui/Card";
 import { MatchResult } from "@/lib/matcher";
 import { ReceiptRequest } from "@/lib/parser";
 import { getMerchantHierarchy } from "@/lib/grouping";
-import { uploadReceiptFile, updateMatchResult } from "@/lib/supabase";
+import { uploadReceiptFile, updateMatchResult, removeMatchResult } from "@/lib/supabase";
 import { useSession } from "next-auth/react";
+import { useRouter } from "next/navigation";
 import { StatusBadge } from "./StatusBadge";
 import { MerchantGroup } from "./MerchantGroup";
 import { ShareModal } from "./ShareModal";
@@ -43,6 +44,7 @@ export const ResultsTable = ({
     onPaymentRequired
 }: ResultsTableProps) => {
     const { data: session } = useSession();
+    const router = useRouter(); // Added router for refresh
     const [manualFiles, setManualFiles] = React.useState<Record<string, File>>({});
     const [previewData, setPreviewData] = React.useState<{ url: string; type: 'pdf' | 'image' | 'html' } | null>(null);
     const [showShareModal, setShowShareModal] = React.useState(false);
@@ -114,6 +116,11 @@ export const ResultsTable = ({
                 delete next[id];
                 return next;
             });
+            // Also remove from server if it was a match
+            removeMatchResult(id).then(() => {
+                // Refresh to update 'matches' prop from server
+                router.refresh();
+            }).catch(err => console.error("Failed to remove match", err));
         } else if (type === 'MISMATCH' && confirmation.file) {
             setManualFiles(prev => ({ ...prev, [id]: confirmation.file! }));
             uploadAndSave(id, confirmation.file!);
@@ -655,16 +662,25 @@ export const ResultsTable = ({
                                         </td>
                                         <td className="px-4 py-3 text-right flex items-center justify-end gap-2">
                                             {isFound ? (
-                                                <Button size="sm" variant="secondary" className="h-8 px-3 text-xs" onClick={() => {
-                                                    if (manualFile) {
-                                                        const type = manualFile.name.endsWith('.pdf') ? 'pdf' : 'image';
-                                                        setPreviewData({ url: URL.createObjectURL(manualFile), type });
-                                                    } else if (match?.storagePath) {
-                                                        onPreview(match.storagePath, 'pdf');
-                                                    }
-                                                }}>
-                                                    Preview
-                                                </Button>
+                                                <>
+                                                    <Button size="sm" variant="secondary" className="h-8 px-3 text-xs" onClick={() => {
+                                                        if (manualFile) {
+                                                            const type = manualFile.name.endsWith('.pdf') ? 'pdf' : 'image';
+                                                            setPreviewData({ url: URL.createObjectURL(manualFile), type });
+                                                        } else if (match?.storagePath) {
+                                                            onPreview(match.storagePath, 'pdf');
+                                                        }
+                                                    }}>
+                                                        Preview
+                                                    </Button>
+                                                    <button
+                                                        onClick={() => requestRemoveFile(r.id)}
+                                                        className="p-1 rounded hover:bg-slate-100 text-slate-300 hover:text-red-500 transition-colors"
+                                                        title="Remove File / Unassign"
+                                                    >
+                                                        <Trash2 className="w-4 h-4" />
+                                                    </button>
+                                                </>
                                             ) : (
                                                 <div className="relative inline-block">
                                                     <Button size="sm" variant="secondary" className="h-8 px-3 text-xs">Upload</Button>
