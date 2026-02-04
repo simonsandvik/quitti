@@ -7,7 +7,7 @@ import FacebookProvider from "next-auth/providers/facebook";
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-const refreshAccessToken = async (token: any) => {
+const refreshGoogleAccessToken = async (token: any) => {
     try {
         const url =
             "https://oauth2.googleapis.com/token?" +
@@ -35,16 +35,66 @@ const refreshAccessToken = async (token: any) => {
             ...token,
             accessToken: refreshedTokens.access_token,
             expiresAt: Math.floor(Date.now() / 1000 + refreshedTokens.expires_in),
-            // Fall back to old refresh token if new one not provided
             refreshToken: refreshedTokens.refresh_token ?? token.refreshToken,
         };
     } catch (error) {
-        console.error("RefreshAccessTokenError", error);
+        console.error("RefreshGoogleAccessTokenError", error);
         return {
             ...token,
             error: "RefreshAccessTokenError",
         };
     }
+};
+
+const refreshAzureAccessToken = async (token: any) => {
+    try {
+        const tenantId = process.env.AZURE_AD_TENANT_ID || "common";
+        const url = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
+
+        const body = new URLSearchParams({
+            client_id: process.env.AZURE_AD_CLIENT_ID || "",
+            client_secret: process.env.AZURE_AD_CLIENT_SECRET || "",
+            scope: "openid profile email offline_access User.Read Mail.Read",
+            grant_type: "refresh_token",
+            refresh_token: token.refreshToken,
+        });
+
+        const response = await fetch(url, {
+            headers: {
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            method: "POST",
+            body: body
+        });
+
+        const refreshedTokens = await response.json();
+
+        if (!response.ok) {
+            throw refreshedTokens;
+        }
+
+        return {
+            ...token,
+            accessToken: refreshedTokens.access_token,
+            expiresAt: Math.floor(Date.now() / 1000 + refreshedTokens.expires_in),
+            refreshToken: refreshedTokens.refresh_token ?? token.refreshToken,
+        };
+    } catch (error) {
+        console.error("RefreshAzureAccessTokenError", error);
+        return {
+            ...token,
+            error: "RefreshAccessTokenError",
+        };
+    }
+};
+
+const refreshAccessToken = async (token: any) => {
+    if (token.provider === "google") {
+        return refreshGoogleAccessToken(token);
+    } else if (token.provider === "azure-ad") {
+        return refreshAzureAccessToken(token);
+    }
+    return token;
 };
 
 export const authOptions: NextAuthOptions = {
@@ -114,13 +164,8 @@ export const authOptions: NextAuthOptions = {
             }
 
             // Access token has expired, try to update it
-            if (token.provider === "google") {
-                console.log("Refreshing Google Access Token...");
-                return await refreshAccessToken(token);
-            }
-
-            // For other providers (Azure), we might want similar logic later
-            return token;
+            // Access token has expired, try to update it
+            return await refreshAccessToken(token);
         },
         async session({ session, token }) {
             // @ts-ignore
