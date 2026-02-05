@@ -108,15 +108,14 @@ export const searchOutlook = async (
         const filter = `receivedDateTime ge ${start.toISOString()} and receivedDateTime le ${end.toISOString()}`;
 
         try {
-            // Build search query prioritizing longer, more meaningful tokens
-            // Sort by length descending, take top 3 meaningful ones
-            // "EU.STAPE.IO, TALLINN" → ["tallinn", "stape", "eu"] → search "tallinn stape"
+            // Use single most meaningful token for search (Graph API $search uses AND for multiple words)
+            // Sort by length descending, pick the longest token that's likely to be unique
+            // "EU.STAPE.IO, TALLINN" → "tallinn", "Finnair" → "finnair", "Google Ads" → "google"
             const searchableTokens = tokens
-                .filter(t => t.length >= 2)
-                .sort((a, b) => b.length - a.length) // Longer tokens first
-                .slice(0, 2); // Top 2 most meaningful tokens
+                .filter(t => t.length >= 3) // At least 3 chars for search
+                .sort((a, b) => b.length - a.length); // Longer tokens first
             const searchQuery = searchableTokens.length > 0
-                ? searchableTokens.join(" ")
+                ? searchableTokens[0] // Single best token
                 : null;
 
             let url: string;
@@ -158,14 +157,14 @@ export const searchOutlook = async (
                 const senderName = (msg.from?.emailAddress?.name || "").toLowerCase();
                 const bodyText = (msg.bodyPreview || "").toLowerCase();
 
-                // Client-side merchant matching (use word boundary for short tokens)
+                // Client-side merchant matching (check subject, sender, senderName, AND bodyPreview)
                 const merchantMatch = tokens.some(token => {
                     if (token.length < 4) {
                         // Short tokens like "vr" need word boundary to avoid matching "over", "every"
                         const regex = new RegExp(`\\b${token}\\b`, 'i');
-                        return regex.test(subject) || regex.test(sender) || regex.test(senderName);
+                        return regex.test(subject) || regex.test(sender) || regex.test(senderName) || regex.test(bodyText);
                     }
-                    return subject.includes(token) || sender.includes(token) || senderName.includes(token);
+                    return subject.includes(token) || sender.includes(token) || senderName.includes(token) || bodyText.includes(token);
                 });
                 if (!merchantMatch) continue;
 
