@@ -58,7 +58,9 @@ export default function Home() {
       try {
         const parsed = JSON.parse(savedReceipts);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          setReceipts(parsed);
+          // WARN: Deduplicate by ID to prevent UI bugs
+          const unique = Array.from(new Map((parsed as ReceiptRequest[]).map(item => [item.id, item])).values());
+          setReceipts(unique);
           setStep("connect");
         }
       } catch (e) {
@@ -169,7 +171,9 @@ export default function Home() {
                 }
               });
 
-              setReceipts(mappedReceipts);
+              // WARN: Deduplicate by ID
+              const uniqueMapped = Array.from(new Map(mappedReceipts.map(item => [item.id, item])).values());
+              setReceipts(uniqueMapped);
               const isConnecting = sessionStorage.getItem("quitti-is-connecting") === "true";
 
               // Only update step if we are NOT currently searching

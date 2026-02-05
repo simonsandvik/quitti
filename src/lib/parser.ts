@@ -119,7 +119,7 @@ export const parseReceipts = (input: string): ReceiptRequest[] => {
 
     const parsed: ReceiptRequest[] = [];
 
-    data.forEach((row: any) => {
+    data.forEach((row: any, index: number) => {
         let date = "";
         let amount = 0;
         let merchant = "";
@@ -174,7 +174,8 @@ export const parseReceipts = (input: string): ReceiptRequest[] => {
 
         if (date && amount > 0) {
             // Use deterministic ID based on content to prevent duplicates across refreshes/pastes
-            const contentString = `${date}_${merchant.toLowerCase()}_${amount.toFixed(2)}`;
+            // We include the index to ensure that two identical rows (e.g. 2 identical taxi rides) get unique IDs
+            const contentString = `${date}_${merchant.toLowerCase()}_${amount.toFixed(2)}_${index}`;
             const deterministicId = uuidv5(contentString, NAMESPACE);
 
             parsed.push({
