@@ -58,17 +58,8 @@ export const LandingHero = ({ onStart, onDemo }: LandingHeroProps) => {
                                 className="px-10 py-7 text-lg rounded-2xl bg-emerald-500 hover:bg-emerald-600 shadow-xl shadow-emerald-500/20 transition-all active:scale-95"
                                 onClick={onStart}
                             >
-                                Start Team Scan
+                                Find My Receipts
                             </Button>
-                            <button
-                                className="px-10 py-7 text-lg font-bold text-slate-600 hover:text-slate-900 transition-colors flex items-center gap-2 justify-center"
-                                onClick={onDemo}
-                            >
-                                See how it works
-                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
-                                </svg>
-                            </button>
                         </div>
 
                         <div className="mt-10 flex flex-col sm:flex-row items-center justify-center lg:justify-start gap-4 sm:gap-8 text-slate-400 text-sm">
