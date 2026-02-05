@@ -77,10 +77,15 @@ export const searchOutlook = async (
     };
 
     const requiredKeywords = [
+        // English
         "receipt", "invoice", "order", "payment", "transaction", "billing",
         "charge", "subscription", "purchase", "confirmation", "statement",
-        "kuitti", "lasku", "tilaus", "maksu", "tilausvahvistus",
-        "kvitto", "faktura", "beställning", "betalning",
+        "booking", "ticket", "usage", "renewal", "summary", "alert",
+        // Finnish
+        "kuitti", "lasku", "tilaus", "maksu", "tilausvahvistus", "varaus", "lippu",
+        // Swedish
+        "kvitto", "faktura", "beställning", "betalning", "bokning", "biljett",
+        // Norwegian/Danish
         "kvittering", "betaling", "bestilling"
     ];
 
@@ -97,21 +102,24 @@ export const searchOutlook = async (
         const end = new Date(date); end.setDate(date.getDate() + 5);
 
         const merchantLower = req.merchant.toLowerCase();
-        const tokens = merchantLower.split(/[^a-z0-9]+/g).filter(t => t.length > 2 && !banned.has(t));
+        // Allow 2-char tokens like "VR" but require word boundaries for matching
+        const tokens = merchantLower.split(/[^a-z0-9]+/g).filter(t => t.length >= 2 && !banned.has(t));
 
         const filter = `receivedDateTime ge ${start.toISOString()} and receivedDateTime le ${end.toISOString()}`;
 
         try {
-            // Try $search + $filter for server-side merchant filtering
-            const searchToken = tokens.length > 0
-                ? tokens.sort((a, b) => b.length - a.length)[0]
+            // Build search query from all meaningful tokens (not just longest)
+            // For "Google Ads" → search "google ads", for "VR" → search "vr"
+            const searchableTokens = tokens.filter(t => t.length >= 2);
+            const searchQuery = searchableTokens.length > 0
+                ? searchableTokens.slice(0, 3).join(" ") // Max 3 tokens for search
                 : null;
 
             let url: string;
             let usedSearch = false;
 
-            if (searchToken && searchToken.length >= 3) {
-                url = `${GRAPH_API_BASE}/messages?$filter=${encodeURIComponent(filter)}&$search="${encodeURIComponent(searchToken)}"&$top=50&$select=id,subject,from,receivedDateTime,bodyPreview,hasAttachments,body`;
+            if (searchQuery) {
+                url = `${GRAPH_API_BASE}/messages?$filter=${encodeURIComponent(filter)}&$search="${encodeURIComponent(searchQuery)}"&$top=50&$select=id,subject,from,receivedDateTime,bodyPreview,hasAttachments,body`;
                 usedSearch = true;
             } else {
                 url = `${GRAPH_API_BASE}/messages?$filter=${encodeURIComponent(filter)}&$top=100&$select=id,subject,from,receivedDateTime,bodyPreview,hasAttachments,body`;
@@ -138,16 +146,23 @@ export const searchOutlook = async (
             const data: GraphMessageList = await res.json();
             const messages = data.value || [];
 
+            console.log(`[Outlook] ${req.merchant}: API returned ${messages.length} emails (tokens: ${tokens.join(", ")})`);
+
             for (const msg of messages) {
                 const subject = (msg.subject || "").toLowerCase();
                 const sender = (msg.from?.emailAddress?.address || "").toLowerCase();
                 const senderName = (msg.from?.emailAddress?.name || "").toLowerCase();
                 const bodyText = (msg.bodyPreview || "").toLowerCase();
 
-                // Client-side merchant matching
-                const merchantMatch = tokens.some(token =>
-                    subject.includes(token) || sender.includes(token) || senderName.includes(token)
-                );
+                // Client-side merchant matching (use word boundary for short tokens)
+                const merchantMatch = tokens.some(token => {
+                    if (token.length < 4) {
+                        // Short tokens like "vr" need word boundary to avoid matching "over", "every"
+                        const regex = new RegExp(`\\b${token}\\b`, 'i');
+                        return regex.test(subject) || regex.test(sender) || regex.test(senderName);
+                    }
+                    return subject.includes(token) || sender.includes(token) || senderName.includes(token);
+                });
                 if (!merchantMatch) continue;
 
                 // Keyword filter (bypass if email has attachments)
