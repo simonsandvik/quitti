@@ -108,38 +108,14 @@ export const searchOutlook = async (
         const filter = `receivedDateTime ge ${start.toISOString()} and receivedDateTime le ${end.toISOString()}`;
 
         try {
-            // Use single most meaningful token for search (Graph API $search uses AND for multiple words)
-            // Sort by length descending, pick the longest token that's likely to be unique
-            // "EU.STAPE.IO, TALLINN" → "tallinn", "Finnair" → "finnair", "Google Ads" → "google"
-            const searchableTokens = tokens
-                .filter(t => t.length >= 3) // At least 3 chars for search
-                .sort((a, b) => b.length - a.length); // Longer tokens first
-            const searchQuery = searchableTokens.length > 0
-                ? searchableTokens[0] // Single best token
-                : null;
+            // Microsoft Graph API often returns 400 when combining $search + $filter
+            // Use $filter only (date range) and do merchant matching client-side
+            // This is more reliable across all tenant configurations
+            const url = `${GRAPH_API_BASE}/messages?$filter=${encodeURIComponent(filter)}&$top=200&$select=id,subject,from,receivedDateTime,bodyPreview,hasAttachments,body`;
 
-            let url: string;
-            let usedSearch = false;
-
-            if (searchQuery) {
-                url = `${GRAPH_API_BASE}/messages?$filter=${encodeURIComponent(filter)}&$search="${encodeURIComponent(searchQuery)}"&$top=100&$select=id,subject,from,receivedDateTime,bodyPreview,hasAttachments,body`;
-                usedSearch = true;
-            } else {
-                url = `${GRAPH_API_BASE}/messages?$filter=${encodeURIComponent(filter)}&$top=200&$select=id,subject,from,receivedDateTime,bodyPreview,hasAttachments,body`;
-            }
-
-            let res = await fetchWithTimeout(url, {
+            const res = await fetchWithTimeout(url, {
                 headers: { Authorization: `Bearer ${accessToken}` }
-            }, 10000);
-
-            // Fallback: if $search + $filter combo fails, retry with $filter only
-            if (!res.ok && usedSearch) {
-                console.log(`[Outlook] $search failed for ${req.merchant} (${res.status}), falling back to $filter only`);
-                url = `${GRAPH_API_BASE}/messages?$filter=${encodeURIComponent(filter)}&$top=100&$select=id,subject,from,receivedDateTime,bodyPreview,hasAttachments,body`;
-                res = await fetchWithTimeout(url, {
-                    headers: { Authorization: `Bearer ${accessToken}` }
-                }, 10000);
-            }
+            }, 15000);
 
             if (!res.ok) {
                 console.log(`[Outlook] Search error for ${req.merchant}: ${res.status}`);
