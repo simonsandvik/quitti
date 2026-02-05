@@ -76,88 +76,99 @@ export const searchOutlook = async (
         }
     };
 
-    const processRequest = async (req: ReceiptRequest) => {
+    // --- Group requests by overlapping date ranges to minimize API calls ---
+    // Instead of 1 API call per merchant (N calls), merge overlapping ±5 day
+    // windows into groups and fetch once per group (typically 3-5 calls).
+    interface DateGroup {
+        start: Date;
+        end: Date;
+        requests: ReceiptRequest[];
+    }
+
+    const sorted = [...requests].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    const groups: DateGroup[] = [];
+
+    for (const req of sorted) {
         const date = new Date(req.date);
-        const start = new Date(date); start.setDate(date.getDate() - 14);
-        const end = new Date(date); end.setDate(date.getDate() + 14);
+        const start = new Date(date); start.setDate(date.getDate() - 5);
+        const end = new Date(date); end.setDate(date.getDate() + 5);
 
-        const startStr = start.toISOString();
-        const endStr = end.toISOString();
+        const lastGroup = groups[groups.length - 1];
+        if (lastGroup && start.getTime() <= lastGroup.end.getTime()) {
+            // Overlapping window — merge into existing group
+            if (end.getTime() > lastGroup.end.getTime()) {
+                lastGroup.end = end;
+            }
+            lastGroup.requests.push(req);
+        } else {
+            groups.push({ start, end, requests: [req] });
+        }
+    }
 
-        // Date-only filter (server-side). Client-side will filter by merchant.
-        // Note: `contains` filter fails with complex merchant names like "GOOGLE*ADS..."
-        const filter = `receivedDateTime ge ${startStr} and receivedDateTime le ${endStr}`;
+    console.log(`[Outlook] Grouped ${requests.length} requests into ${groups.length} date-range queries`);
+
+    const requiredKeywords = [
+        "receipt", "invoice", "order", "payment", "transaction", "billing",
+        "charge", "subscription", "purchase", "confirmation", "statement",
+        "kuitti", "lasku", "tilaus", "maksu", "tilausvahvistus",
+        "kvitto", "faktura", "beställning", "betalning",
+        "kvittering", "betaling", "bestilling"
+    ];
+
+    const banned = new Set(["inc", "ltd", "gmbh", "usd", "eur", "the", "and", "for", "receipt", "payment", "subscription", "labs", "com", "www"]);
+
+    const processGroup = async (group: DateGroup, groupIndex: number) => {
+        const filter = `receivedDateTime ge ${group.start.toISOString()} and receivedDateTime le ${group.end.toISOString()}`;
 
         try {
-            const url = `${GRAPH_API_BASE}/messages?$filter=${encodeURIComponent(filter)}&$top=500&$select=id,subject,from,receivedDateTime,bodyPreview,hasAttachments,body`;
+            const url = `${GRAPH_API_BASE}/messages?$filter=${encodeURIComponent(filter)}&$top=200&$select=id,subject,from,receivedDateTime,bodyPreview,hasAttachments,body`;
 
             const res = await fetchWithTimeout(url, {
                 headers: { Authorization: `Bearer ${accessToken}` }
-            }, 8000); // 8s timeout for search
+            }, 10000);
 
             if (!res.ok) {
-                console.log(`[Outlook Debug] Error ${res.status}: ${res.statusText}`);
-                const errText = await res.text();
-                console.log(`[Outlook Debug] Response Body: ${errText}`);
+                console.log(`[Outlook] Group ${groupIndex + 1} error: ${res.status}`);
                 return;
             }
 
             const data: GraphMessageList = await res.json();
-            console.log(`[Outlook Debug] Found ${data.value?.length || 0} messages in date range for ${req.merchant}`);
+            const messages = data.value || [];
+            console.log(`[Outlook] Group ${groupIndex + 1}: ${messages.length} emails, ${group.requests.length} merchants`);
 
-            if (data.value) {
-                // Client-side filtering
-                const merchantLower = req.merchant.toLowerCase();
-                const banned = new Set(["inc", "ltd", "gmbh", "usd", "eur", "the", "and", "for", "receipt", "payment", "subscription", "labs", "com", "www"]);
-                const tokens = merchantLower.split(/[^a-z0-9]+/g).filter(t => t.length > 2 && !banned.has(t));
-                const requiredKeywords = [
-                    // English
-                    "receipt", "invoice", "order", "payment", "transaction", "billing",
-                    "charge", "subscription", "purchase", "confirmation", "statement",
-                    // Finnish
-                    "kuitti", "lasku", "tilaus", "maksu", "tilausvahvistus",
-                    // Swedish
-                    "kvitto", "faktura", "beställning", "betalning",
-                    // Norwegian/Danish
-                    "kvittering", "betaling", "bestilling"
-                ];
+            // Match each message against ALL merchants in this group
+            for (const msg of messages) {
+                const subject = (msg.subject || "").toLowerCase();
+                const sender = (msg.from?.emailAddress?.address || "").toLowerCase();
+                const senderName = (msg.from?.emailAddress?.name || "").toLowerCase();
+                const bodyText = (msg.bodyPreview || "").toLowerCase();
 
-                const relevantMessages = data.value.filter(msg => {
-                    const subject = (msg.subject || "").toLowerCase();
-                    const sender = (msg.from?.emailAddress?.address || "").toLowerCase();
-                    const senderName = (msg.from?.emailAddress?.name || "").toLowerCase();
-                    const bodyText = (msg.bodyPreview || "").toLowerCase();
+                // Find which requests this message matches
+                for (const req of group.requests) {
+                    const merchantLower = req.merchant.toLowerCase();
+                    const tokens = merchantLower.split(/[^a-z0-9]+/g).filter(t => t.length > 2 && !banned.has(t));
 
-                    // Merchant name MUST appear in Sender OR Subject.
                     const merchantMatch = tokens.some(token =>
                         subject.includes(token) || sender.includes(token) || senderName.includes(token)
                     );
-
-                    if (!merchantMatch) return false;
+                    if (!merchantMatch) continue;
 
                     const hasKeyword = requiredKeywords.some(k =>
                         subject.includes(k) || bodyText.includes(k)
                     );
+                    if (!hasKeyword && !msg.hasAttachments) continue;
 
-                    // Bypass keyword filter if email has attachments (likely has a PDF)
-                    return hasKeyword || msg.hasAttachments;
-                });
-
-                console.log(`[Outlook Debug] ${relevantMessages.length} messages passed client-side filter for "${req.merchant}"`);
-
-                for (const msg of relevantMessages) {
-                    await new Promise(r => setTimeout(r, 100)); // Faster 100ms delay
-
+                    // This message matches this merchant — fetch attachments and emit
                     let attachments: { name: string; type: string; size: number; id: string }[] = [];
                     if (msg.hasAttachments) {
                         try {
                             attachments = await fetchAttachments(msg.id);
                         } catch (err) {
-                            console.log(`[Outlook Debug] Failed to fetch attachments for ${msg.id}`, err);
+                            console.log(`[Outlook] Failed to fetch attachments for ${msg.id}`, err);
                         }
                     }
 
-                    const candidate = {
+                    const candidate: EmailCandidate = {
                         id: msg.id,
                         subject: msg.subject,
                         sender: msg.from?.emailAddress?.address || "",
@@ -165,7 +176,7 @@ export const searchOutlook = async (
                         snippet: msg.bodyPreview,
                         bodyHtml: msg.body?.content,
                         hasAttachments: msg.hasAttachments,
-                        attachments: attachments
+                        attachments
                     };
 
                     batchedResults.push(candidate);
@@ -175,16 +186,17 @@ export const searchOutlook = async (
                     }
                 }
             }
-
         } catch (e) {
-            console.log("[Outlook Debug] CRITICAL SEARCH ERROR:", e);
+            console.log(`[Outlook] Group ${groupIndex + 1} CRITICAL ERROR:`, e);
         }
     };
 
-    for (const [index, req] of requests.entries()) {
-        onProgress?.(`Check ${index + 1}/${requests.length}: ${req.merchant}`);
-        await processRequest(req);
-        await new Promise(r => setTimeout(r, 200)); // Reduced delay
+    // Process groups in parallel batches of 4
+    const groupBatchSize = 4;
+    for (let i = 0; i < groups.length; i += groupBatchSize) {
+        const batch = groups.slice(i, i + groupBatchSize);
+        onProgress?.(`Check ${Math.min(i + groupBatchSize, groups.length)}/${groups.length} date ranges...`);
+        await Promise.all(batch.map((g, j) => processGroup(g, i + j)));
     }
 
     const unique = new Map();
