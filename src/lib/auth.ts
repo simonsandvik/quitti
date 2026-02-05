@@ -152,7 +152,10 @@ export const authOptions: NextAuthOptions = {
                     expiresAt: account.expires_at,
                     refreshToken: account.refresh_token,
                     provider: account.provider,
-                    user: token.user,
+                    // Preserve profile data (name/email/picture live at top level of token, not under .user)
+                    name: token.name,
+                    email: token.email,
+                    picture: token.picture,
                     sub: token.sub
                 };
             }
