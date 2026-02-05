@@ -76,37 +76,6 @@ export const searchOutlook = async (
         }
     };
 
-    // --- Group requests by overlapping date ranges to minimize API calls ---
-    // Instead of 1 API call per merchant (N calls), merge overlapping ±5 day
-    // windows into groups and fetch once per group (typically 3-5 calls).
-    interface DateGroup {
-        start: Date;
-        end: Date;
-        requests: ReceiptRequest[];
-    }
-
-    const sorted = [...requests].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-    const groups: DateGroup[] = [];
-
-    for (const req of sorted) {
-        const date = new Date(req.date);
-        const start = new Date(date); start.setDate(date.getDate() - 5);
-        const end = new Date(date); end.setDate(date.getDate() + 5);
-
-        const lastGroup = groups[groups.length - 1];
-        if (lastGroup && start.getTime() <= lastGroup.end.getTime()) {
-            // Overlapping window — merge into existing group
-            if (end.getTime() > lastGroup.end.getTime()) {
-                lastGroup.end = end;
-            }
-            lastGroup.requests.push(req);
-        } else {
-            groups.push({ start, end, requests: [req] });
-        }
-    }
-
-    console.log(`[Outlook] Grouped ${requests.length} requests into ${groups.length} date-range queries`);
-
     const requiredKeywords = [
         "receipt", "invoice", "order", "payment", "transaction", "billing",
         "charge", "subscription", "purchase", "confirmation", "statement",
@@ -117,86 +86,114 @@ export const searchOutlook = async (
 
     const banned = new Set(["inc", "ltd", "gmbh", "usd", "eur", "the", "and", "for", "receipt", "payment", "subscription", "labs", "com", "www"]);
 
-    const processGroup = async (group: DateGroup, groupIndex: number) => {
-        const filter = `receivedDateTime ge ${group.start.toISOString()} and receivedDateTime le ${group.end.toISOString()}`;
+    // --- Per-merchant parallel queries (like Gmail) ---
+    // Each request gets its own focused API call with ±5 day date window.
+    // This avoids the mega-group problem where overlapping windows chain
+    // into year-spanning queries that exceed $top limits.
+
+    const processRequest = async (req: ReceiptRequest) => {
+        const date = new Date(req.date);
+        const start = new Date(date); start.setDate(date.getDate() - 5);
+        const end = new Date(date); end.setDate(date.getDate() + 5);
+
+        const merchantLower = req.merchant.toLowerCase();
+        const tokens = merchantLower.split(/[^a-z0-9]+/g).filter(t => t.length > 2 && !banned.has(t));
+
+        const filter = `receivedDateTime ge ${start.toISOString()} and receivedDateTime le ${end.toISOString()}`;
 
         try {
-            const url = `${GRAPH_API_BASE}/messages?$filter=${encodeURIComponent(filter)}&$top=200&$select=id,subject,from,receivedDateTime,bodyPreview,hasAttachments,body`;
+            // Try $search + $filter for server-side merchant filtering
+            const searchToken = tokens.length > 0
+                ? tokens.sort((a, b) => b.length - a.length)[0]
+                : null;
 
-            const res = await fetchWithTimeout(url, {
+            let url: string;
+            let usedSearch = false;
+
+            if (searchToken && searchToken.length >= 3) {
+                url = `${GRAPH_API_BASE}/messages?$filter=${encodeURIComponent(filter)}&$search="${encodeURIComponent(searchToken)}"&$top=50&$select=id,subject,from,receivedDateTime,bodyPreview,hasAttachments,body`;
+                usedSearch = true;
+            } else {
+                url = `${GRAPH_API_BASE}/messages?$filter=${encodeURIComponent(filter)}&$top=100&$select=id,subject,from,receivedDateTime,bodyPreview,hasAttachments,body`;
+            }
+
+            let res = await fetchWithTimeout(url, {
                 headers: { Authorization: `Bearer ${accessToken}` }
             }, 10000);
 
+            // Fallback: if $search + $filter combo fails, retry with $filter only
+            if (!res.ok && usedSearch) {
+                console.log(`[Outlook] $search failed for ${req.merchant} (${res.status}), falling back to $filter only`);
+                url = `${GRAPH_API_BASE}/messages?$filter=${encodeURIComponent(filter)}&$top=100&$select=id,subject,from,receivedDateTime,bodyPreview,hasAttachments,body`;
+                res = await fetchWithTimeout(url, {
+                    headers: { Authorization: `Bearer ${accessToken}` }
+                }, 10000);
+            }
+
             if (!res.ok) {
-                console.log(`[Outlook] Group ${groupIndex + 1} error: ${res.status}`);
+                console.log(`[Outlook] Search error for ${req.merchant}: ${res.status}`);
                 return;
             }
 
             const data: GraphMessageList = await res.json();
             const messages = data.value || [];
-            console.log(`[Outlook] Group ${groupIndex + 1}: ${messages.length} emails, ${group.requests.length} merchants`);
 
-            // Match each message against ALL merchants in this group
             for (const msg of messages) {
                 const subject = (msg.subject || "").toLowerCase();
                 const sender = (msg.from?.emailAddress?.address || "").toLowerCase();
                 const senderName = (msg.from?.emailAddress?.name || "").toLowerCase();
                 const bodyText = (msg.bodyPreview || "").toLowerCase();
 
-                // Find which requests this message matches
-                for (const req of group.requests) {
-                    const merchantLower = req.merchant.toLowerCase();
-                    const tokens = merchantLower.split(/[^a-z0-9]+/g).filter(t => t.length > 2 && !banned.has(t));
+                // Client-side merchant matching
+                const merchantMatch = tokens.some(token =>
+                    subject.includes(token) || sender.includes(token) || senderName.includes(token)
+                );
+                if (!merchantMatch) continue;
 
-                    const merchantMatch = tokens.some(token =>
-                        subject.includes(token) || sender.includes(token) || senderName.includes(token)
-                    );
-                    if (!merchantMatch) continue;
+                // Keyword filter (bypass if email has attachments)
+                const hasKeyword = requiredKeywords.some(k =>
+                    subject.includes(k) || bodyText.includes(k)
+                );
+                if (!hasKeyword && !msg.hasAttachments) continue;
 
-                    const hasKeyword = requiredKeywords.some(k =>
-                        subject.includes(k) || bodyText.includes(k)
-                    );
-                    if (!hasKeyword && !msg.hasAttachments) continue;
-
-                    // This message matches this merchant — fetch attachments and emit
-                    let attachments: { name: string; type: string; size: number; id: string }[] = [];
-                    if (msg.hasAttachments) {
-                        try {
-                            attachments = await fetchAttachments(msg.id);
-                        } catch (err) {
-                            console.log(`[Outlook] Failed to fetch attachments for ${msg.id}`, err);
-                        }
+                // Fetch attachments
+                let attachments: { name: string; type: string; size: number; id: string }[] = [];
+                if (msg.hasAttachments) {
+                    try {
+                        attachments = await fetchAttachments(msg.id);
+                    } catch (err) {
+                        console.log(`[Outlook] Failed to fetch attachments for ${msg.id}`, err);
                     }
+                }
 
-                    const candidate: EmailCandidate = {
-                        id: msg.id,
-                        subject: msg.subject,
-                        sender: msg.from?.emailAddress?.address || "",
-                        date: new Date(msg.receivedDateTime),
-                        snippet: msg.bodyPreview,
-                        bodyHtml: msg.body?.content,
-                        hasAttachments: msg.hasAttachments,
-                        attachments
-                    };
+                const candidate: EmailCandidate = {
+                    id: msg.id,
+                    subject: msg.subject,
+                    sender: msg.from?.emailAddress?.address || "",
+                    date: new Date(msg.receivedDateTime),
+                    snippet: msg.bodyPreview,
+                    bodyHtml: msg.body?.content,
+                    hasAttachments: msg.hasAttachments,
+                    attachments
+                };
 
-                    batchedResults.push(candidate);
+                batchedResults.push(candidate);
 
-                    if (onResult) {
-                        await onResult(candidate, req);
-                    }
+                if (onResult) {
+                    await onResult(candidate, req);
                 }
             }
         } catch (e) {
-            console.log(`[Outlook] Group ${groupIndex + 1} CRITICAL ERROR:`, e);
+            console.log(`[Outlook] Error searching for ${req.merchant}:`, e);
         }
     };
 
-    // Process groups in parallel batches of 4
-    const groupBatchSize = 4;
-    for (let i = 0; i < groups.length; i += groupBatchSize) {
-        const batch = groups.slice(i, i + groupBatchSize);
-        onProgress?.(`Check ${Math.min(i + groupBatchSize, groups.length)}/${groups.length} date ranges...`);
-        await Promise.all(batch.map((g, j) => processGroup(g, i + j)));
+    // Process in parallel batches of 8 (like Gmail's batch of 10)
+    const batchSize = 8;
+    for (let i = 0; i < requests.length; i += batchSize) {
+        const batch = requests.slice(i, i + batchSize);
+        onProgress?.(`Check ${i + 1}-${Math.min(i + batchSize, requests.length)}/${requests.length}: ${batch[0].merchant}...`);
+        await Promise.all(batch.map(req => processRequest(req)));
     }
 
     const unique = new Map();

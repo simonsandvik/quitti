@@ -240,7 +240,10 @@ export const matchReceipt = (request: ReceiptRequest, email: EmailCandidate): Ma
     if (senderDomain) {
         const merchantClean = request.merchant.toLowerCase().replace(/[^a-z0-9]/g, '');
         const domainBase = senderDomain.split('.')[0];
-        if (senderDomain.includes(merchantClean) || merchantClean.includes(domainBase)) {
+        if (
+            (merchantClean.length >= 3 && senderDomain.includes(merchantClean)) ||
+            (domainBase.length >= 4 && merchantClean.includes(domainBase))
+        ) {
             score += 20;
             detailsParts.push(`Sender domain match: ${senderDomain}`);
         }

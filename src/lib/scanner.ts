@@ -260,7 +260,10 @@ export const scanEmails = async (
                         } catch (e) {
                             console.error(`[HTML Receipt] Failed to process HTML body for ${req.merchant}`, e);
                         }
-                        // If we get here, neither strategy worked — release the ID
+                    }
+
+                    // Always release if neither strategy produced a file
+                    if (!files[req.id]) {
                         foundIds.delete(req.id);
                     }
                 }
@@ -274,7 +277,7 @@ export const scanEmails = async (
             console.log(`Starting Gmail Scan for ${email}...`);
             updateProgress(`Scanning Gmail (${email})...`);
             try {
-                sessionCandidates = await searchGmail(token, requests, handleSearchProgress);
+                sessionCandidates = await searchGmail(token, requests, handleSearchProgress, handleCandidateFound);
             } catch (e) {
                 console.error("Gmail Scan Error", e);
                 sessionCandidates = [];
