@@ -108,21 +108,25 @@ export const searchOutlook = async (
         const filter = `receivedDateTime ge ${start.toISOString()} and receivedDateTime le ${end.toISOString()}`;
 
         try {
-            // Build search query from all meaningful tokens (not just longest)
-            // For "Google Ads" → search "google ads", for "VR" → search "vr"
-            const searchableTokens = tokens.filter(t => t.length >= 2);
+            // Build search query prioritizing longer, more meaningful tokens
+            // Sort by length descending, take top 3 meaningful ones
+            // "EU.STAPE.IO, TALLINN" → ["tallinn", "stape", "eu"] → search "tallinn stape"
+            const searchableTokens = tokens
+                .filter(t => t.length >= 2)
+                .sort((a, b) => b.length - a.length) // Longer tokens first
+                .slice(0, 2); // Top 2 most meaningful tokens
             const searchQuery = searchableTokens.length > 0
-                ? searchableTokens.slice(0, 3).join(" ") // Max 3 tokens for search
+                ? searchableTokens.join(" ")
                 : null;
 
             let url: string;
             let usedSearch = false;
 
             if (searchQuery) {
-                url = `${GRAPH_API_BASE}/messages?$filter=${encodeURIComponent(filter)}&$search="${encodeURIComponent(searchQuery)}"&$top=50&$select=id,subject,from,receivedDateTime,bodyPreview,hasAttachments,body`;
+                url = `${GRAPH_API_BASE}/messages?$filter=${encodeURIComponent(filter)}&$search="${encodeURIComponent(searchQuery)}"&$top=100&$select=id,subject,from,receivedDateTime,bodyPreview,hasAttachments,body`;
                 usedSearch = true;
             } else {
-                url = `${GRAPH_API_BASE}/messages?$filter=${encodeURIComponent(filter)}&$top=100&$select=id,subject,from,receivedDateTime,bodyPreview,hasAttachments,body`;
+                url = `${GRAPH_API_BASE}/messages?$filter=${encodeURIComponent(filter)}&$top=200&$select=id,subject,from,receivedDateTime,bodyPreview,hasAttachments,body`;
             }
 
             let res = await fetchWithTimeout(url, {
