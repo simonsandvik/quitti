@@ -209,24 +209,42 @@ export const matchReceipt = (request: ReceiptRequest, email: EmailCandidate): Ma
 
 
     // --- 3. Attachment Check (Max 20) ---
-    // STRICT MODE: Must have PDF attachment (User Request for MVP)
     const hasPdf = email.attachments.some(a =>
         a.type.toLowerCase().includes("pdf") ||
         a.name.toLowerCase().endsWith(".pdf")
     );
 
-    if (!hasPdf) {
-        return {
-            receiptId: request.id,
-            emailId: email.id,
-            status: "NOT_FOUND",
-            confidence: 0,
-            details: "Skipped: No PDF attachment",
-            matchedHtml: undefined
-        };
+    if (hasPdf) {
+        score += 20;
+        detailsParts.push("Has PDF Attachment");
+    } else if (email.bodyHtml && email.bodyHtml.length > 100) {
+        // No PDF attachment, but email has HTML body that might BE a receipt
+        score += 5;
+        detailsParts.push("Has HTML Body (no PDF)");
     }
-    score += 20;
-    detailsParts.push("Has PDF Attachment");
+
+    // --- 3b. Body Amount Check (Max +15) ---
+    // If the email body contains the exact transaction amount, boost confidence
+    if (email.bodyHtml) {
+        const amountStr = request.amount.toFixed(2);
+        const amountEuropean = amountStr.replace('.', ',');
+        const bodyText = email.bodyHtml.replace(/<[^>]+>/g, ' ');
+        if (bodyText.includes(amountStr) || bodyText.includes(amountEuropean)) {
+            score += 15;
+            detailsParts.push("Amount found in email body");
+        }
+    }
+
+    // --- 3c. Sender Domain Match (Max +20) ---
+    const senderDomain = email.sender.match(/@([\w.-]+)/)?.[1]?.toLowerCase();
+    if (senderDomain) {
+        const merchantClean = request.merchant.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const domainBase = senderDomain.split('.')[0];
+        if (senderDomain.includes(merchantClean) || merchantClean.includes(domainBase)) {
+            score += 20;
+            detailsParts.push(`Sender domain match: ${senderDomain}`);
+        }
+    }
 
 
     // --- 4. Final Status Determination ---

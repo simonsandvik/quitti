@@ -117,123 +117,151 @@ export const scanEmails = async (
                     console.log(`[Scanner Debug] Match candidate for ${req.merchant}: Confidence ${result.confidence.toFixed(2)} - ${enrichedCandidate.subject}`);
                 }
 
-                if (result.confidence > 0) {
-                    if (result.status === "FOUND") {
-                        if (foundIds.has(req.id)) return;
-                        foundIds.add(req.id);
+                if (result.confidence > 0 && (result.status === "FOUND" || result.status === "POSSIBLE")) {
+                    if (foundIds.has(req.id)) return;
+                    foundIds.add(req.id);
 
-                        // Content Verification will determine if we push this match
-                        // matches.push(result);
+                    // --- Strategy 1: PDF Attachment (original behavior) ---
+                    const pdf = enrichedCandidate.attachments.find(a =>
+                        a.type.toLowerCase().includes("pdf") ||
+                        a.name.toLowerCase().endsWith(".pdf")
+                    );
 
-                        // Auto-Fetch
-                        // STRICT MVP: Only fetching PDFs.
-                        // If it's not a PDF, we skip it (as per user request: "only take the receipts with an attached PDF")
+                    if (pdf) {
+                        try {
+                            console.log(`[Auto-Fetch] Downloading ${pdf.name} for receipt ${req.merchant}...`);
+                            updateProgress(`Found ${req.merchant}! Downloading...`, currentProgressCount);
 
-                        const pdf = enrichedCandidate.attachments.find(a =>
-                            a.type.toLowerCase().includes("pdf") ||
-                            a.name.toLowerCase().endsWith(".pdf")
-                        );
-
-                        // Removed Image Fallback
-                        const target = pdf;
-
-                        if (target) {
-                            try {
-                                console.log(`[Auto-Fetch] Downloading ${target.name} for receipt ${req.merchant}...`);
-                                updateProgress(`Found ${req.merchant}! Downloading...`, currentProgressCount);
-
-                                let blob: Blob | null = null;
-                                if (provider === "google") {
-                                    blob = await getGmailAttachment(token, enrichedCandidate.id, target.id);
-                                } else if (provider === "azure-ad") {
-                                    blob = await getOutlookAttachment(token, enrichedCandidate.id, target.id);
-                                }
-
-                                if (blob) {
-                                    let isValid = true;
-                                    const isPdf = target.type.includes("pdf") || target.name.toLowerCase().endsWith(".pdf");
-
-                                    // PDF Content Verification
-                                    if (isPdf) {
-                                        try {
-                                            const arrayBuffer = await blob.arrayBuffer();
-                                            const buffer = Buffer.from(arrayBuffer);
-                                            const { verifyPdfMatch } = await import("./pdf-parser"); // Dynamic import to avoid top-level issues if server-side only
-
-                                            const verification = await verifyPdfMatch(buffer, req);
-
-                                            if (verification.isMatch) {
-                                                console.log(`[Content Verify] PDF Match Confirmed for ${req.merchant}: ${verification.details.join(", ")}`);
-                                            } else {
-                                                console.warn(`[Content Verify] PDF Mismatch for ${req.merchant}. extracted text did not contain strong signals. Details: ${verification.details.join(", ")}`);
-
-                                                // METADATA OVERRIDE: Accept if email metadata was a very strong match (e.g. Exact Date + Strong Merchant)
-                                                // BUT REJECT if we found a Hard Amount Mismatch (e.g. Found 6.00 but needed 500.00)
-                                                if (result.confidence > 85 && !verification.hasHardAmountMismatch) {
-                                                    console.log(`[Content Verify] OVERRIDE: Accepting file despite PDF content mismatch due to High Confidence Metadata Match (${result.confidence}). (No hard mismatch detected)`);
-                                                    isValid = true;
-                                                } else if (verification.hasHardAmountMismatch) {
-                                                    console.log(`[Content Verify] REJECTING: Hard Amount Mismatch detected. Metadata confidence (${result.confidence}) overridden by content failure.`);
-                                                    isValid = false;
-                                                } else {
-                                                    // STRICT CHECK: If we extracted text successfully (>50 chars) but failed to match, it's a BAD match
-                                                    if (verification.extractedText && verification.extractedText.length > 50) {
-                                                        console.log(`[Content Verify] REJECTING: Valid text found but content mismatch. False Positive prevented.`);
-                                                        isValid = false;
-                                                    } else {
-                                                        // Text extraction likely failed or PDF is image-only
-                                                        console.log(`[Content Verify] WARNING: Low text extraction. Trusting metadata match due to lack of evidence.`);
-                                                        isValid = true;
-                                                    }
-                                                }
-                                            }
-                                        } catch (err) {
-                                            console.error("[Content Verify] Failed to parse PDF", err);
-                                            // If parse fails, do we discard? 
-                                            // Maybe safer to keep it if metadata match was strong?
-                                            // Let's keep it but warn.
-                                        }
-                                    }
-
-                                    if (isValid) {
-                                        const file = new File([blob], target.name, { type: target.type || blob.type });
-                                        files[req.id] = file;
-                                        matches.push(result); // ONLY push match if content verified
-                                        foundCount++;
-
-                                        // Track PDF count
-                                        if (isPdf) {
-                                            pdfCount++;
-                                        }
-
-                                        updateProgress(`Saved ${req.merchant}`, completedSteps + currentProgressCount);
-                                        console.log(`[Auto-Fetch] Success! Created file: ${file.name} (${file.size})`);
-
-                                        // Trigger Cloud Upload if User ID is present
-                                        let storagePath = undefined;
-                                        if (userId) {
-                                            try {
-                                                console.log(`[Cloud Sync] Uploading ${file.name} to Supabase...`);
-                                                storagePath = await uploadReceiptFile(userId, req.id, file);
-                                                console.log(`[Cloud Sync] Upload complete: ${storagePath}`);
-                                            } catch (e) {
-                                                console.error(`[Cloud Sync] Failed to upload ${file.name}`, e);
-                                            }
-                                        }
-
-                                        // Update the match result with the storage path (referenced when saving to DB later)
-                                        result.storagePath = storagePath;
-                                        result.matchedHtml = undefined; // Optimization: Don't store huge HTML if we have a file? Maybe keep it for debug.
-                                    } else {
-                                        console.log(`[Auto-Fetch] Skipped ${target.name} due to content mismatch.`);
-                                    }
-                                }
-                            } catch (e) {
-                                console.error("Failed to auto-fetch attachment", e);
+                            let blob: Blob | null = null;
+                            if (provider === "google") {
+                                blob = await getGmailAttachment(token, enrichedCandidate.id, pdf.id);
+                            } else if (provider === "azure-ad") {
+                                blob = await getOutlookAttachment(token, enrichedCandidate.id, pdf.id);
                             }
+
+                            if (blob) {
+                                let isValid = true;
+
+                                // PDF Content Verification
+                                try {
+                                    const arrayBuffer = await blob.arrayBuffer();
+                                    const buffer = Buffer.from(arrayBuffer);
+                                    const { verifyPdfMatch } = await import("./pdf-parser");
+
+                                    const verification = await verifyPdfMatch(buffer, req);
+
+                                    if (verification.isMatch) {
+                                        console.log(`[Content Verify] PDF Match Confirmed for ${req.merchant}: ${verification.details.join(", ")}`);
+                                    } else {
+                                        console.warn(`[Content Verify] PDF Mismatch for ${req.merchant}. Details: ${verification.details.join(", ")}`);
+
+                                        if (result.confidence > 85 && !verification.hasHardAmountMismatch) {
+                                            console.log(`[Content Verify] OVERRIDE: Accepting due to High Confidence Metadata Match (${result.confidence}).`);
+                                            isValid = true;
+                                        } else if (verification.hasHardAmountMismatch) {
+                                            console.log(`[Content Verify] REJECTING: Hard Amount Mismatch detected.`);
+                                            isValid = false;
+                                        } else {
+                                            if (verification.extractedText && verification.extractedText.length > 50) {
+                                                console.log(`[Content Verify] REJECTING: Valid text found but content mismatch.`);
+                                                isValid = false;
+                                            } else {
+                                                console.log(`[Content Verify] WARNING: Low text extraction. Trusting metadata match.`);
+                                                isValid = true;
+                                            }
+                                        }
+                                    }
+                                } catch (err) {
+                                    console.error("[Content Verify] Failed to parse PDF", err);
+                                }
+
+                                if (isValid) {
+                                    const file = new File([blob], pdf.name, { type: pdf.type || blob.type });
+                                    files[req.id] = file;
+                                    matches.push(result);
+                                    foundCount++;
+                                    pdfCount++;
+
+                                    updateProgress(`Saved ${req.merchant}`, completedSteps + currentProgressCount);
+                                    console.log(`[Auto-Fetch] Success! Created file: ${file.name} (${file.size})`);
+
+                                    let storagePath = undefined;
+                                    if (userId) {
+                                        try {
+                                            console.log(`[Cloud Sync] Uploading ${file.name} to Supabase...`);
+                                            storagePath = await uploadReceiptFile(userId, req.id, file);
+                                            console.log(`[Cloud Sync] Upload complete: ${storagePath}`);
+                                        } catch (e) {
+                                            console.error(`[Cloud Sync] Failed to upload ${file.name}`, e);
+                                        }
+                                    }
+
+                                    result.storagePath = storagePath;
+                                    result.matchedHtml = undefined;
+                                    return; // PDF found and verified, done with this candidate
+                                } else {
+                                    console.log(`[Auto-Fetch] Skipped ${pdf.name} due to content mismatch.`);
+                                    // Fall through to HTML fallback
+                                    foundIds.delete(req.id);
+                                }
+                            }
+                        } catch (e) {
+                            console.error("Failed to auto-fetch attachment", e);
+                            foundIds.delete(req.id);
                         }
-                    } else {
-                        console.log(`[Scanner Debug] Match FOUND for ${req.merchant} but NO PDF/Attachment. Skipping (Text-Only Disabled).`);
+                    }
+
+                    // --- Strategy 2: HTML Email Body → PDF (fallback) ---
+                    if (!files[req.id] && enrichedCandidate.bodyHtml) {
+                        try {
+                            const { analyzeHtmlReceipt, cleanEmailHtml } = await import("./html-receipt-detector");
+                            const analysis = analyzeHtmlReceipt(enrichedCandidate.bodyHtml, req);
+
+                            if (analysis.isReceipt) {
+                                console.log(`[HTML Receipt] Email body IS a receipt for ${req.merchant} (confidence: ${analysis.confidence})`);
+                                updateProgress(`Converting email receipt for ${req.merchant}...`, currentProgressCount);
+
+                                const cleanedHtml = cleanEmailHtml(enrichedCandidate.bodyHtml, req.merchant);
+                                const { htmlToPdfBlob } = await import("./pdf");
+                                const pdfBlob = await htmlToPdfBlob(cleanedHtml);
+
+                                if (pdfBlob && pdfBlob.size > 0) {
+                                    const fileName = `${req.merchant.replace(/[^a-zA-Z0-9]/g, '_')}_${req.date}_email.pdf`;
+                                    const file = new File([pdfBlob], fileName, { type: "application/pdf" });
+                                    files[req.id] = file;
+                                    foundIds.add(req.id);
+                                    matches.push({
+                                        ...result,
+                                        status: "FOUND",
+                                        details: result.details + ", HTML Email → PDF",
+                                    });
+                                    foundCount++;
+                                    pdfCount++;
+
+                                    updateProgress(`Saved ${req.merchant} (from email)`, completedSteps + currentProgressCount);
+                                    console.log(`[HTML Receipt] Success! Converted email to PDF: ${fileName} (${file.size})`);
+
+                                    let storagePath = undefined;
+                                    if (userId) {
+                                        try {
+                                            storagePath = await uploadReceiptFile(userId, req.id, file);
+                                            console.log(`[Cloud Sync] Upload complete: ${storagePath}`);
+                                        } catch (e) {
+                                            console.error(`[Cloud Sync] Failed to upload ${fileName}`, e);
+                                        }
+                                    }
+
+                                    result.storagePath = storagePath;
+                                    return; // HTML receipt converted, done
+                                }
+                            } else {
+                                console.log(`[HTML Receipt] Email body is NOT a receipt for ${req.merchant} (confidence: ${analysis.confidence})`);
+                            }
+                        } catch (e) {
+                            console.error(`[HTML Receipt] Failed to process HTML body for ${req.merchant}`, e);
+                        }
+                        // If we get here, neither strategy worked — release the ID
+                        foundIds.delete(req.id);
                     }
                 }
             } catch (err) {

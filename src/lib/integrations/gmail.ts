@@ -159,8 +159,8 @@ export const searchGmail = async (
 
     const processRequest = async (req: ReceiptRequest) => {
         const date = new Date(req.date);
-        const start = new Date(date); start.setDate(date.getDate() - 5);
-        const end = new Date(date); end.setDate(date.getDate() + 5);
+        const start = new Date(date); start.setDate(date.getDate() - 14);
+        const end = new Date(date); end.setDate(date.getDate() + 14);
 
         const after = start.toISOString().split("T")[0].replace(/-/g, "/");
         const before = end.toISOString().split("T")[0].replace(/-/g, "/");
@@ -181,14 +181,29 @@ export const searchGmail = async (
                 const details = await Promise.all(listData.messages.map(m => fetchMessageDetails(m.id)));
 
                 // Client-side Keyword Filter
-                const requiredKeywords = ["receipt", "kuitti", "kvitto", "invoice", "lasku", "order", "tilaus"];
+                const requiredKeywords = [
+                    // English
+                    "receipt", "invoice", "order", "payment", "transaction", "billing",
+                    "charge", "subscription", "purchase", "confirmation", "statement",
+                    // Finnish
+                    "kuitti", "lasku", "tilaus", "maksu", "tilausvahvistus",
+                    // Swedish
+                    "kvitto", "faktura", "beställning", "betalning",
+                    // Norwegian/Danish
+                    "kvittering", "betaling", "bestilling"
+                ];
 
                 for (const d of details) {
                     if (!d) continue;
                     const textToCheck = (d.subject + " " + d.snippet + " " + (d.bodyHtml || "")).toLowerCase();
                     const hasKeyword = requiredKeywords.some(k => textToCheck.includes(k));
 
-                    if (hasKeyword) {
+                    // Bypass keyword filter if email has a PDF attachment
+                    const hasPdfAttachment = d.attachments?.some(a =>
+                        a.type?.toLowerCase().includes("pdf") || a.name?.toLowerCase().endsWith(".pdf")
+                    );
+
+                    if (hasKeyword || hasPdfAttachment) {
                         batchedResults.push(d);
                         if (onResult) {
                             await onResult(d, req);

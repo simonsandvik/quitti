@@ -78,8 +78,8 @@ export const searchOutlook = async (
 
     const processRequest = async (req: ReceiptRequest) => {
         const date = new Date(req.date);
-        const start = new Date(date); start.setDate(date.getDate() - 5);
-        const end = new Date(date); end.setDate(date.getDate() + 5);
+        const start = new Date(date); start.setDate(date.getDate() - 14);
+        const end = new Date(date); end.setDate(date.getDate() + 14);
 
         const startStr = start.toISOString();
         const endStr = end.toISOString();
@@ -110,7 +110,17 @@ export const searchOutlook = async (
                 const merchantLower = req.merchant.toLowerCase();
                 const banned = new Set(["inc", "ltd", "gmbh", "usd", "eur", "the", "and", "for", "receipt", "payment", "subscription", "labs", "com", "www"]);
                 const tokens = merchantLower.split(/[^a-z0-9]+/g).filter(t => t.length > 2 && !banned.has(t));
-                const requiredKeywords = ["receipt", "kuitti", "kvitto", "invoice", "lasku", "order", "tilaus"];
+                const requiredKeywords = [
+                    // English
+                    "receipt", "invoice", "order", "payment", "transaction", "billing",
+                    "charge", "subscription", "purchase", "confirmation", "statement",
+                    // Finnish
+                    "kuitti", "lasku", "tilaus", "maksu", "tilausvahvistus",
+                    // Swedish
+                    "kvitto", "faktura", "beställning", "betalning",
+                    // Norwegian/Danish
+                    "kvittering", "betaling", "bestilling"
+                ];
 
                 const relevantMessages = data.value.filter(msg => {
                     const subject = (msg.subject || "").toLowerCase();
@@ -118,9 +128,7 @@ export const searchOutlook = async (
                     const senderName = (msg.from?.emailAddress?.name || "").toLowerCase();
                     const bodyText = (msg.bodyPreview || "").toLowerCase();
 
-                    // STRICTER MATCHING:
-                    // 1. Merchant name MUST appear in Sender OR Subject.
-                    // 2. We do NOT match purely on body content anymore (too many false positives like "Microsoft" in a reseller email).
+                    // Merchant name MUST appear in Sender OR Subject.
                     const merchantMatch = tokens.some(token =>
                         subject.includes(token) || sender.includes(token) || senderName.includes(token)
                     );
@@ -131,7 +139,8 @@ export const searchOutlook = async (
                         subject.includes(k) || bodyText.includes(k)
                     );
 
-                    return merchantMatch && hasKeyword;
+                    // Bypass keyword filter if email has attachments (likely has a PDF)
+                    return hasKeyword || msg.hasAttachments;
                 });
 
                 console.log(`[Outlook Debug] ${relevantMessages.length} messages passed client-side filter for "${req.merchant}"`);
