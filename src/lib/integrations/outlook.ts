@@ -113,9 +113,19 @@ export const searchOutlook = async (
             // This is more reliable across all tenant configurations
             const url = `${GRAPH_API_BASE}/messages?$filter=${encodeURIComponent(filter)}&$top=200&$select=id,subject,from,receivedDateTime,bodyPreview,hasAttachments,body`;
 
-            const res = await fetchWithTimeout(url, {
+            let res = await fetchWithTimeout(url, {
                 headers: { Authorization: `Bearer ${accessToken}` }
             }, 15000);
+
+            // Retry on 429 (rate limit) with exponential backoff
+            if (res.status === 429) {
+                const retryAfter = parseInt(res.headers.get('Retry-After') || '2', 10);
+                console.log(`[Outlook] Rate limited for ${req.merchant}, waiting ${retryAfter}s...`);
+                await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+                res = await fetchWithTimeout(url, {
+                    headers: { Authorization: `Bearer ${accessToken}` }
+                }, 15000);
+            }
 
             if (!res.ok) {
                 console.log(`[Outlook] Search error for ${req.merchant}: ${res.status}`);
@@ -182,12 +192,17 @@ export const searchOutlook = async (
         }
     };
 
-    // Process in parallel batches of 8 (like Gmail's batch of 10)
-    const batchSize = 8;
+    // Process in parallel batches of 4 with delay to avoid 429 rate limiting
+    const batchSize = 4;
     for (let i = 0; i < requests.length; i += batchSize) {
         const batch = requests.slice(i, i + batchSize);
         onProgress?.(`Check ${i + 1}-${Math.min(i + batchSize, requests.length)}/${requests.length}: ${batch[0].merchant}...`);
         await Promise.all(batch.map(req => processRequest(req)));
+
+        // Small delay between batches to avoid rate limiting
+        if (i + batchSize < requests.length) {
+            await new Promise(resolve => setTimeout(resolve, 200));
+        }
     }
 
     const unique = new Map();
