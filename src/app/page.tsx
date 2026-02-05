@@ -236,9 +236,9 @@ export default function Home() {
 
 
   const loading = status === "loading";
-  const isAuthenticated = sessions.length > 0 || isDemo || isManualMode;
-  // Use email from last added session, or fallback
-  const userEmail = sessions[sessions.length - 1]?.user?.email || (isManualMode ? "Manual Upload Mode" : "demo@quittiapp.com");
+  const isAuthenticated = status === "authenticated" || sessions.length > 0 || isDemo || isManualMode;
+  // Use email from session (App Login), or last added session (Scanner), or fallback
+  const userEmail = session?.user?.email || sessions[sessions.length - 1]?.user?.email || (isManualMode ? "Manual Upload Mode" : "demo@quittiapp.com");
 
   useEffect(() => {
     if (session && !isDemo) {
