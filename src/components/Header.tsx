@@ -3,6 +3,7 @@
 import Link from "next/link";
 import Image from "next/image";
 import { useSession, signOut, signIn } from "next-auth/react";
+import { useRouter } from "next/navigation";
 
 interface HeaderProps {
     onReset?: () => void;
@@ -10,6 +11,13 @@ interface HeaderProps {
 
 export const Header = ({ onReset }: HeaderProps) => {
     const { data: session } = useSession();
+    const router = useRouter();
+
+    const handleDashboardClick = () => {
+        // Navigate to "/" and scroll to top
+        router.push("/");
+        window.scrollTo({ top: 0, behavior: "smooth" });
+    };
 
     return (
         <header className="fixed top-0 left-0 right-0 z-50 bg-white/70 backdrop-blur-xl border-b border-slate-200/50">
@@ -68,12 +76,12 @@ export const Header = ({ onReset }: HeaderProps) => {
                                 <span className="text-xs font-medium text-slate-500 hidden sm:inline-block">
                                     {session.user?.email}
                                 </span>
-                                <Link
-                                    href="/"
+                                <button
+                                    onClick={handleDashboardClick}
                                     className="px-4 py-2 bg-emerald-500 text-white text-sm font-bold rounded-lg shadow-lg shadow-emerald-500/20 hover:bg-emerald-600 transition-all"
                                 >
                                     Dashboard
-                                </Link>
+                                </button>
                             </div>
                         ) : (
                             <div className="flex items-center gap-4">
