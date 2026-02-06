@@ -68,12 +68,12 @@ export const Header = ({ onReset }: HeaderProps) => {
                                 <span className="text-xs font-medium text-slate-500 hidden sm:inline-block">
                                     {session.user?.email}
                                 </span>
-                                <button
-                                    onClick={() => onReset ? onReset() : window.location.reload()}
+                                <Link
+                                    href="/"
                                     className="px-4 py-2 bg-emerald-500 text-white text-sm font-bold rounded-lg shadow-lg shadow-emerald-500/20 hover:bg-emerald-600 transition-all"
                                 >
                                     Dashboard
-                                </button>
+                                </Link>
                             </div>
                         ) : (
                             <div className="flex items-center gap-4">

@@ -1,11 +1,4 @@
 import { ReceiptRequest } from "./parser";
-import * as pdfjsLib from "pdfjs-dist";
-
-// Configure worker for browser environment
-// Using a CDN is the most reliable way to get the worker running without complex Next.js config
-if (typeof window !== "undefined" && !pdfjsLib.GlobalWorkerOptions.workerSrc) {
-    pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
-}
 
 export interface PdfContentMatch {
     isMatch: boolean;
@@ -16,7 +9,21 @@ export interface PdfContentMatch {
 }
 
 export const parsePdfContent = async (buffer: Uint8Array | Buffer): Promise<string> => {
+    // Only run in browser - pdfjs-dist requires DOM APIs
+    if (typeof window === "undefined") {
+        console.log("[PDF Parser] Skipping - not in browser environment");
+        return "";
+    }
+
     try {
+        // Dynamic import to avoid SSR issues with pdfjs-dist
+        const pdfjsLib = await import("pdfjs-dist");
+
+        // Configure worker for browser environment
+        if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
+            pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
+        }
+
         // Ensure we have a Uint8Array
         const data = buffer instanceof Buffer ? new Uint8Array(buffer) : buffer;
 
