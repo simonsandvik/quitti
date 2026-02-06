@@ -1,5 +1,5 @@
 import { ReceiptRequest } from "./parser";
-import { EmailCandidate, matchReceipt, MatchResult } from "./matcher";
+import { EmailCandidate, MatchResult } from "./matcher";
 import { v4 as uuidv4 } from "uuid";
 
 // Mock data generator for MVP demos without real API keys
@@ -32,11 +32,9 @@ const generateMockEmails = (requests: ReceiptRequest[]): EmailCandidate[] => {
     });
 };
 
-import { searchGmail } from "./integrations/gmail";
-import { searchOutlook } from "./integrations/outlook";
-
-import { getGmailAttachment } from "./integrations/gmail";
-import { getOutlookAttachment } from "./integrations/outlook";
+import { searchGmailForPdfs, getGmailAttachment } from "./integrations/gmail";
+import { searchOutlookForPdfs, getOutlookAttachment } from "./integrations/outlook";
+import { parsePdfContent, verifyPdfForRequest } from "./pdf-parser";
 import { uploadReceiptFile } from "./supabase";
 
 export const scanEmails = async (
@@ -78,220 +76,127 @@ export const scanEmails = async (
         const token = session?.accessToken;
         const email = session?.user?.email || "unknown";
 
-        // State to track current session progress for callbacks
+        // Progress tracking for API integrations
         let currentProgressCount = 0;
 
-        // Progress Handler for Search
-        const handleSearchProgress = (msg: string) => {
-            // Outlook sends "Check I/N: Merchant" -> We use I as progress
-            // Gmail currently sends "Check I-J/N: Merchant" -> We use J as progress
-            // We need to extract the number of processed requests in THIS session.
+        // ==========================================
+        // PDF-First Scanning Approach
+        // ==========================================
+        // Instead of searching by merchant name, we:
+        // 1. Find all PDFs in the date range
+        // 2. Download each PDF
+        // 3. Check if it contains: amount + date (±3 days) + merchant name
 
-            const matchPair = msg.match(/Check (\d+)-(\d+)\/(\d+)/); // Gmail batch
-            const matchSingle = msg.match(/Check (\d+)\/(\d+)/);     // Outlook single
+        if ((provider === "google" || provider === "azure-ad") && token) {
+            console.log(`Starting PDF-First Scan for ${email} (${provider})...`);
 
-            if (matchPair) {
-                currentProgressCount = parseInt(matchPair[2], 10);
-            } else if (matchSingle) {
-                currentProgressCount = parseInt(matchSingle[1], 10);
-            }
+            // Calculate date range from all requests
+            const dates = requests.map(r => new Date(r.date).getTime());
+            const minDate = new Date(Math.min(...dates));
+            const maxDate = new Date(Math.max(...dates));
+            minDate.setDate(minDate.getDate() - 5);
+            maxDate.setDate(maxDate.getDate() + 5);
 
-            updateProgress(msg, currentProgressCount);
-        };
+            console.log(`[Scanner] Date range: ${minDate.toISOString().split('T')[0]} to ${maxDate.toISOString().split('T')[0]}`);
 
+            // Search for all PDFs in the date range
+            updateProgress(`Searching for PDF attachments...`, 0);
 
-
-        const handleCandidateFound = async (candidate: EmailCandidate, req: ReceiptRequest) => {
-            // Inject provider/token since searchOutlook creates the raw candidate
-            const enrichedCandidate = {
-                ...candidate,
-                provider: provider as any,
-                accessToken: token
-            };
+            let pdfList: { messageId: string; attachmentId: string; attachmentName: string; emailDate: Date }[] = [];
 
             try {
-                const result = matchReceipt(req, enrichedCandidate);
-                console.log(`[Scanner] 🧐 Analyzing candidate for ${req.merchant}: "${enrichedCandidate.subject}" (Confidence: ${result.confidence}, Status: ${result.status})`);
-
-                if (result.confidence > 20) {
-                    console.log(`[Scanner Debug] Match candidate for ${req.merchant}: Confidence ${result.confidence.toFixed(2)} - ${enrichedCandidate.subject}`);
+                if (provider === "google") {
+                    pdfList = await searchGmailForPdfs(token, minDate, maxDate, (msg) => updateProgress(msg, 0));
+                } else {
+                    pdfList = await searchOutlookForPdfs(token, minDate, maxDate, (msg) => updateProgress(msg, 0));
                 }
 
-                if (result.confidence > 0 && (result.status === "FOUND" || result.status === "POSSIBLE")) {
-                    if (foundIds.has(req.id)) return;
-                    foundIds.add(req.id);
+                console.log(`[Scanner] Found ${pdfList.length} PDF attachments in date range`);
+                updateProgress(`Found ${pdfList.length} PDFs. Checking content...`, 10);
 
-                    // --- Strategy 1: PDF Attachment (original behavior) ---
-                    const pdf = enrichedCandidate.attachments.find(a =>
-                        a.type.toLowerCase().includes("pdf") ||
-                        a.name.toLowerCase().endsWith(".pdf")
-                    );
+                // Track which requests are still unmatched
+                const unmatchedRequests = new Set(requests.map(r => r.id));
 
-                    if (pdf) {
-                        try {
-                            console.log(`[Auto-Fetch] Downloading ${pdf.name} for receipt ${req.merchant}...`);
-                            updateProgress(`Found ${req.merchant}! Downloading...`, currentProgressCount);
+                // Download and verify each PDF
+                for (let i = 0; i < pdfList.length && unmatchedRequests.size > 0; i++) {
+                    const pdf = pdfList[i];
+                    const progressPercent = 10 + Math.floor((i / pdfList.length) * 80);
+                    updateProgress(`Checking PDF ${i + 1}/${pdfList.length}: ${pdf.attachmentName}...`, progressPercent);
 
-                            let blob: Blob | null = null;
-                            if (provider === "google") {
-                                blob = await getGmailAttachment(token, enrichedCandidate.id, pdf.id);
-                            } else if (provider === "azure-ad") {
-                                blob = await getOutlookAttachment(token, enrichedCandidate.id, pdf.id);
-                            }
-
-                            if (blob) {
-                                let isValid = true;
-
-                                // PDF Content Verification
-                                try {
-                                    const arrayBuffer = await blob.arrayBuffer();
-                                    const buffer = Buffer.from(arrayBuffer);
-                                    const { verifyPdfMatch } = await import("./pdf-parser");
-
-                                    const verification = await verifyPdfMatch(buffer, req);
-
-                                    if (verification.isMatch) {
-                                        console.log(`[Content Verify] PDF Match Confirmed for ${req.merchant}: ${verification.details.join(", ")}`);
-                                    } else {
-                                        console.warn(`[Content Verify] PDF Mismatch for ${req.merchant}. Details: ${verification.details.join(", ")}`);
-
-                                        if (result.confidence > 85 && !verification.hasHardAmountMismatch) {
-                                            console.log(`[Content Verify] OVERRIDE: Accepting due to High Confidence Metadata Match (${result.confidence}).`);
-                                            isValid = true;
-                                        } else if (verification.hasHardAmountMismatch) {
-                                            console.log(`[Content Verify] REJECTING: Hard Amount Mismatch detected.`);
-                                            isValid = false;
-                                        } else {
-                                            if (verification.extractedText && verification.extractedText.length > 50) {
-                                                console.log(`[Content Verify] REJECTING: Valid text found but content mismatch.`);
-                                                isValid = false;
-                                            } else {
-                                                console.log(`[Content Verify] WARNING: Low text extraction. Trusting metadata match.`);
-                                                isValid = true;
-                                            }
-                                        }
-                                    }
-                                } catch (err) {
-                                    console.error("[Content Verify] Failed to parse PDF", err);
-                                }
-
-                                if (isValid) {
-                                    const file = new File([blob], pdf.name, { type: pdf.type || blob.type });
-                                    files[req.id] = file;
-                                    matches.push(result);
-                                    foundCount++;
-                                    pdfCount++;
-
-                                    updateProgress(`Saved ${req.merchant}`, completedSteps + currentProgressCount);
-                                    console.log(`[Auto-Fetch] Success! Created file: ${file.name} (${file.size})`);
-
-                                    let storagePath = undefined;
-                                    if (userId) {
-                                        try {
-                                            console.log(`[Cloud Sync] Uploading ${file.name} to Supabase...`);
-                                            storagePath = await uploadReceiptFile(userId, req.id, file);
-                                            console.log(`[Cloud Sync] Upload complete: ${storagePath}`);
-                                        } catch (e) {
-                                            console.error(`[Cloud Sync] Failed to upload ${file.name}`, e);
-                                        }
-                                    }
-
-                                    result.storagePath = storagePath;
-                                    result.matchedHtml = undefined;
-                                    return; // PDF found and verified, done with this candidate
-                                } else {
-                                    console.log(`[Auto-Fetch] Skipped ${pdf.name} due to content mismatch.`);
-                                    // Fall through to HTML fallback
-                                    foundIds.delete(req.id);
-                                }
-                            }
-                        } catch (e) {
-                            console.error("Failed to auto-fetch attachment", e);
-                            foundIds.delete(req.id);
+                    try {
+                        // Download the PDF
+                        let blob: Blob | null = null;
+                        if (provider === "google") {
+                            blob = await getGmailAttachment(token, pdf.messageId, pdf.attachmentId);
+                        } else {
+                            blob = await getOutlookAttachment(token, pdf.messageId, pdf.attachmentId);
                         }
-                    }
 
-                    // --- Strategy 2: HTML Email Body → PDF (fallback) ---
-                    if (!files[req.id] && enrichedCandidate.bodyHtml) {
-                        try {
-                            const { analyzeHtmlReceipt, cleanEmailHtml } = await import("./html-receipt-detector");
-                            const analysis = analyzeHtmlReceipt(enrichedCandidate.bodyHtml, req);
-
-                            if (analysis.isReceipt) {
-                                console.log(`[HTML Receipt] Email body IS a receipt for ${req.merchant} (confidence: ${analysis.confidence})`);
-                                updateProgress(`Converting email receipt for ${req.merchant}...`, currentProgressCount);
-
-                                const cleanedHtml = cleanEmailHtml(enrichedCandidate.bodyHtml, req.merchant);
-                                const { htmlToPdfBlob } = await import("./pdf");
-                                const pdfBlob = await htmlToPdfBlob(cleanedHtml);
-
-                                if (pdfBlob && pdfBlob.size > 0) {
-                                    const fileName = `${req.merchant.replace(/[^a-zA-Z0-9]/g, '_')}_${req.date}_email.pdf`;
-                                    const file = new File([pdfBlob], fileName, { type: "application/pdf" });
-                                    files[req.id] = file;
-                                    foundIds.add(req.id);
-                                    matches.push({
-                                        ...result,
-                                        status: "FOUND",
-                                        details: result.details + ", HTML Email → PDF",
-                                    });
-                                    foundCount++;
-                                    pdfCount++;
-
-                                    updateProgress(`Saved ${req.merchant} (from email)`, completedSteps + currentProgressCount);
-                                    console.log(`[HTML Receipt] Success! Converted email to PDF: ${fileName} (${file.size})`);
-
-                                    let storagePath = undefined;
-                                    if (userId) {
-                                        try {
-                                            storagePath = await uploadReceiptFile(userId, req.id, file);
-                                            console.log(`[Cloud Sync] Upload complete: ${storagePath}`);
-                                        } catch (e) {
-                                            console.error(`[Cloud Sync] Failed to upload ${fileName}`, e);
-                                        }
-                                    }
-
-                                    result.storagePath = storagePath;
-                                    return; // HTML receipt converted, done
-                                }
-                            } else {
-                                console.log(`[HTML Receipt] Email body is NOT a receipt for ${req.merchant} (confidence: ${analysis.confidence})`);
-                            }
-                        } catch (e) {
-                            console.error(`[HTML Receipt] Failed to process HTML body for ${req.merchant}`, e);
+                        if (!blob) {
+                            console.log(`[Scanner] Failed to download ${pdf.attachmentName}`);
+                            continue;
                         }
-                    }
 
-                    // Always release if neither strategy produced a file
-                    if (!files[req.id]) {
-                        foundIds.delete(req.id);
+                        // Extract text from PDF
+                        const arrayBuffer = await blob.arrayBuffer();
+                        const buffer = Buffer.from(arrayBuffer);
+                        const text = await parsePdfContent(buffer);
+
+                        if (!text.trim()) {
+                            console.log(`[Scanner] No text in ${pdf.attachmentName} (skipping)`);
+                            continue;
+                        }
+
+                        // Try to match against unmatched requests
+                        for (const reqId of unmatchedRequests) {
+                            const req = requests.find(r => r.id === reqId)!;
+                            const { isMatch, details } = verifyPdfForRequest(text, req);
+
+                            if (isMatch) {
+                                console.log(`[Scanner] ✓ Matched ${req.merchant} (${req.amount}) to ${pdf.attachmentName}`);
+                                console.log(`[Scanner]   Details: ${details.join(', ')}`);
+
+                                // Save the file
+                                const file = new File([blob], pdf.attachmentName, { type: "application/pdf" });
+                                files[req.id] = file;
+                                foundCount++;
+                                pdfCount++;
+
+                                // Record the match
+                                matches.push({
+                                    receiptId: req.id,
+                                    emailId: pdf.messageId,
+                                    status: "FOUND",
+                                    confidence: 100,
+                                    details: `PDF match: ${pdf.attachmentName} (${details.join(', ')})`
+                                });
+
+                                // Upload to cloud if userId provided
+                                if (userId) {
+                                    try {
+                                        const storagePath = await uploadReceiptFile(userId, req.id, file);
+                                        console.log(`[Cloud Sync] Uploaded: ${storagePath}`);
+                                    } catch (e) {
+                                        console.error(`[Cloud Sync] Failed to upload ${pdf.attachmentName}`, e);
+                                    }
+                                }
+
+                                unmatchedRequests.delete(reqId);
+                                updateProgress(`Matched ${req.merchant}!`, progressPercent);
+                                break; // One PDF per request, move to next PDF
+                            }
+                        }
+                    } catch (e) {
+                        console.error(`[Scanner] Error processing ${pdf.attachmentName}`, e);
                     }
                 }
-            } catch (err) {
-                console.error(`[Scanner Error] Matching logic failed for ${req.merchant}`, err);
-            }
-        };
 
-        // Check for Real Providers
-        if (provider === "google" && token) {
-            console.log(`Starting Gmail Scan for ${email}...`);
-            updateProgress(`Scanning Gmail (${email})...`);
-            try {
-                sessionCandidates = await searchGmail(token, requests, handleSearchProgress, handleCandidateFound);
+                console.log(`[Scanner] PDF-First scan complete. Matched ${foundCount}/${requests.length} receipts.`);
+
             } catch (e) {
-                console.error("Gmail Scan Error", e);
-                sessionCandidates = [];
+                console.error(`[Scanner] PDF search failed for ${provider}`, e);
             }
-        } else if (provider === "azure-ad" && token) {
-            console.log(`Starting Outlook Scan for ${email}...`);
-            updateProgress(`Scanning Outlook (${email})...`);
-            try {
-                sessionCandidates = await searchOutlook(token, requests, handleSearchProgress, handleCandidateFound);
-            } catch (e) {
-                console.error("Outlook Scan Error", e);
-                sessionCandidates = [];
-            }
-        } else {
+        } else if (!provider || !token) {
             // Demo Mode / Mock
             console.log("Starting Mock Scan...");
             updateProgress("Running demo scan...");

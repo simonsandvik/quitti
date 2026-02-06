@@ -212,6 +212,104 @@ export const searchOutlook = async (
     return finalResults;
 };
 
+export interface PdfAttachmentInfo {
+    messageId: string;
+    attachmentId: string;
+    attachmentName: string;
+    emailDate: Date;
+}
+
+export const searchOutlookForPdfs = async (
+    accessToken: string,
+    startDate: Date,
+    endDate: Date,
+    onProgress?: (msg: string) => void
+): Promise<PdfAttachmentInfo[]> => {
+    const results: PdfAttachmentInfo[] = [];
+
+    // Build filter: hasAttachments AND date range
+    const filter = `hasAttachments eq true and receivedDateTime ge ${startDate.toISOString()} and receivedDateTime le ${endDate.toISOString()}`;
+    console.log(`[Outlook PDF Search] Filter: ${filter}`);
+
+    onProgress?.(`Searching Outlook for PDFs...`);
+
+    try {
+        let nextLink: string | undefined = `${GRAPH_API_BASE}/messages?$filter=${encodeURIComponent(filter)}&$top=100&$select=id,receivedDateTime,hasAttachments`;
+
+        let totalMessages = 0;
+
+        while (nextLink) {
+            const res = await fetchWithTimeout(nextLink, {
+                headers: { Authorization: `Bearer ${accessToken}` }
+            }, 15000);
+
+            // Handle rate limiting
+            if (res.status === 429) {
+                const retryAfter = parseInt(res.headers.get('Retry-After') || '5', 10);
+                console.log(`[Outlook PDF Search] Rate limited, waiting ${retryAfter}s...`);
+                await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+                continue;
+            }
+
+            if (!res.ok) {
+                console.error(`[Outlook PDF Search] List failed: ${res.status}`);
+                break;
+            }
+
+            const data = await res.json();
+            const messages = data.value || [];
+            totalMessages += messages.length;
+            nextLink = data['@odata.nextLink'];
+
+            console.log(`[Outlook PDF Search] Found ${messages.length} messages with attachments (total: ${totalMessages})`);
+
+            // For each message, fetch attachments and filter for PDFs
+            for (const msg of messages) {
+                try {
+                    const attRes = await fetchWithTimeout(
+                        `${GRAPH_API_BASE}/messages/${msg.id}/attachments?$select=id,name,contentType,size`,
+                        { headers: { Authorization: `Bearer ${accessToken}` } }
+                    );
+
+                    if (!attRes.ok) continue;
+
+                    const attData = await attRes.json();
+                    const attachments = attData.value || [];
+
+                    for (const att of attachments) {
+                        const isPdf = att.contentType?.toLowerCase().includes('pdf') ||
+                            att.name?.toLowerCase().endsWith('.pdf');
+
+                        if (isPdf) {
+                            results.push({
+                                messageId: msg.id,
+                                attachmentId: att.id,
+                                attachmentName: att.name,
+                                emailDate: new Date(msg.receivedDateTime)
+                            });
+                        }
+                    }
+                } catch (e) {
+                    console.error(`[Outlook PDF Search] Error fetching attachments for ${msg.id}`, e);
+                }
+            }
+
+            onProgress?.(`Found ${results.length} PDFs...`);
+
+            // Small delay to avoid rate limiting
+            if (nextLink) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+        }
+
+    } catch (e) {
+        console.error("[Outlook PDF Search] Search failed", e);
+    }
+
+    console.log(`[Outlook PDF Search] Complete. Found ${results.length} PDF attachments.`);
+    return results;
+};
+
 export const getOutlookAttachment = async (accessToken: string, messageId: string, attachmentId: string): Promise<Blob | null> => {
     try {
         const res = await fetch(`${GRAPH_API_BASE}/messages/${messageId}/attachments/${attachmentId}`, {

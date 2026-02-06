@@ -230,6 +230,126 @@ export const searchGmail = async (
     return Array.from(unique.values());
 };
 
+export interface PdfAttachmentInfo {
+    messageId: string;
+    attachmentId: string;
+    attachmentName: string;
+    emailDate: Date;
+}
+
+export const searchGmailForPdfs = async (
+    accessToken: string,
+    startDate: Date,
+    endDate: Date,
+    onProgress?: (msg: string) => void
+): Promise<PdfAttachmentInfo[]> => {
+    const results: PdfAttachmentInfo[] = [];
+
+    // Format dates for Gmail query
+    const after = startDate.toISOString().split("T")[0].replace(/-/g, "/");
+    const before = endDate.toISOString().split("T")[0].replace(/-/g, "/");
+
+    // Search for emails with PDF attachments in date range
+    const q = `has:attachment filename:pdf after:${after} before:${before}`;
+    console.log(`[Gmail PDF Search] Query: ${q}`);
+
+    onProgress?.(`Searching Gmail for PDFs...`);
+
+    try {
+        // Fetch message list (paginated)
+        let pageToken: string | undefined;
+        let totalMessages = 0;
+
+        do {
+            const url = `${GMAIL_API_BASE}/messages?q=${encodeURIComponent(q)}&maxResults=100${pageToken ? `&pageToken=${pageToken}` : ''}`;
+            const listRes = await fetchWithTimeout(url, {
+                headers: { Authorization: `Bearer ${accessToken}` }
+            }, 15000);
+
+            if (!listRes.ok) {
+                console.error(`[Gmail PDF Search] List failed: ${listRes.status}`);
+                break;
+            }
+
+            const listData = await listRes.json();
+            const messages = listData.messages || [];
+            totalMessages += messages.length;
+            pageToken = listData.nextPageToken;
+
+            console.log(`[Gmail PDF Search] Found ${messages.length} messages (total: ${totalMessages})`);
+
+            // Fetch details for each message to get attachment info
+            for (const msg of messages) {
+                try {
+                    const detailRes = await fetchWithTimeout(
+                        `${GMAIL_API_BASE}/messages/${msg.id}?format=metadata&metadataHeaders=Date`,
+                        { headers: { Authorization: `Bearer ${accessToken}` } }
+                    );
+
+                    if (!detailRes.ok) continue;
+
+                    const detail = await detailRes.json();
+                    const dateHeader = detail.payload?.headers?.find((h: any) => h.name === "Date")?.value;
+                    const emailDate = dateHeader ? new Date(dateHeader) : new Date(parseInt(detail.internalDate));
+
+                    // Fetch attachment list
+                    const attRes = await fetchWithTimeout(
+                        `${GMAIL_API_BASE}/messages/${msg.id}?format=full`,
+                        { headers: { Authorization: `Bearer ${accessToken}` } }
+                    );
+
+                    if (!attRes.ok) continue;
+
+                    const fullMsg = await attRes.json();
+                    const attachments = extractAttachmentsFromPayload(fullMsg.payload);
+
+                    for (const att of attachments) {
+                        if (att.name.toLowerCase().endsWith('.pdf') || att.type.toLowerCase().includes('pdf')) {
+                            results.push({
+                                messageId: msg.id,
+                                attachmentId: att.id,
+                                attachmentName: att.name,
+                                emailDate
+                            });
+                        }
+                    }
+                } catch (e) {
+                    console.error(`[Gmail PDF Search] Error processing message ${msg.id}`, e);
+                }
+            }
+
+            onProgress?.(`Found ${results.length} PDFs...`);
+        } while (pageToken);
+
+    } catch (e) {
+        console.error("[Gmail PDF Search] Search failed", e);
+    }
+
+    console.log(`[Gmail PDF Search] Complete. Found ${results.length} PDF attachments.`);
+    return results;
+};
+
+// Helper to extract attachments from Gmail payload (recursive)
+const extractAttachmentsFromPayload = (payload: any): { name: string; type: string; id: string }[] => {
+    const attachments: { name: string; type: string; id: string }[] = [];
+
+    if (payload.filename && payload.body?.attachmentId) {
+        attachments.push({
+            name: payload.filename,
+            type: payload.mimeType,
+            id: payload.body.attachmentId
+        });
+    }
+
+    if (payload.parts) {
+        for (const part of payload.parts) {
+            attachments.push(...extractAttachmentsFromPayload(part));
+        }
+    }
+
+    return attachments;
+};
+
 export const getGmailAttachment = async (accessToken: string, messageId: string, attachmentId: string): Promise<Blob | null> => {
     try {
         console.log(`[Gmail Attach] Fetching attachment: ${attachmentId} from message: ${messageId}`);
