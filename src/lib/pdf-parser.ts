@@ -153,9 +153,27 @@ export const verifyPdfForRequest = (text: string, request: ReceiptRequest): { is
 
     // --- 3. MERCHANT CHECK ---
     let merchantFound = false;
-    const merchantLower = request.merchant.toLowerCase();
-    const STOP_WORDS = new Set(["oy", "ab", "ltd", "inc", "corp", "gmbh", "the", "and", "for", "co", "llc", "com", "cc", "www", "net", "org", "fi", "se", "no", "dk", "de", "uk", "eu", "info", "io"]);
-    const tokens = merchantLower.split(/[^a-z0-9]+/g).filter(t => t.length >= 2 && !STOP_WORDS.has(t));
+    // Only use text before first comma — everything after is usually location/currency info
+    // e.g. "JJ KROGEN AB, VASA" → "JJ KROGEN AB"
+    // e.g. "BOLT.EU/O/2508270802, DKK 127,00 Koebenhavn KURSSI: 7,2989" → "BOLT.EU/O/2508270802"
+    const merchantPart = request.merchant.split(',')[0].toLowerCase();
+    const STOP_WORDS = new Set([
+        // Corporate suffixes
+        "oy", "ab", "ltd", "inc", "corp", "gmbh", "co", "llc", "sa", "ag",
+        // TLDs and web
+        "com", "cc", "www", "net", "org", "fi", "se", "no", "dk", "de", "uk", "eu", "info", "io",
+        // Common words
+        "the", "and", "for", "pay", "mob",
+        // Countries and cities (Nordic focus)
+        "finland", "sweden", "norway", "denmark", "ireland", "dublin",
+        "helsinki", "vasa", "turku", "tampere", "oulu", "espoo",
+        "stockholm", "copenhagen", "oslo", "koebenhavn",
+        // Currency
+        "eur", "usd", "gbp", "sek", "nok", "dkk", "kurssi",
+    ]);
+    const tokens = merchantPart
+        .split(/[^a-z]+/g) // Only alphabetic tokens (filters out numbers like "00", "2508270802")
+        .filter(t => t.length >= 3 && !STOP_WORDS.has(t)); // Min 3 chars to avoid "nh", "jj" etc.
 
     for (const token of tokens) {
         if (token.length < 4) {

@@ -174,22 +174,16 @@ export default function Home() {
               // WARN: Deduplicate by ID
               const uniqueMapped = Array.from(new Map(mappedReceipts.map(item => [item.id, item])).values());
               setReceipts(uniqueMapped);
-              const isConnecting = sessionStorage.getItem("quitti-is-connecting") === "true";
 
-              // Only update step if we are NOT currently searching or showing results
-              if (step !== "searching" && step !== "results") {
-                if (mappedMatches.length > 0 && !isConnecting) {
-                  setMatches(mappedMatches);
+              // Only upgrade step to "results" if we have matches — never downgrade step
+              if (mappedMatches.length > 0) {
+                setMatches(mappedMatches);
+                const isConnecting = sessionStorage.getItem("quitti-is-connecting") === "true";
+                if (!isConnecting && step !== "searching") {
                   setStep("results");
-                } else {
-                  if (mappedMatches.length > 0) setMatches(mappedMatches);
-                  setStep("connect");
                 }
-              } else {
-                // If searching, just update matches silently if we found any valid ones (unlikely during scan start)
-                if (mappedMatches.length > 0) setMatches(mappedMatches);
-                console.log("[Cloud] Skipping step update - currently searching");
               }
+              // Never set step to "connect" from cloud sync — that's handled by initial load and handleStartHunt
             }
           }
         } catch (error) {
