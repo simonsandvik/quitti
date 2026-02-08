@@ -176,8 +176,8 @@ export default function Home() {
               setReceipts(uniqueMapped);
               const isConnecting = sessionStorage.getItem("quitti-is-connecting") === "true";
 
-              // Only update step if we are NOT currently searching
-              if (step !== "searching") {
+              // Only update step if we are NOT currently searching or showing results
+              if (step !== "searching" && step !== "results") {
                 if (mappedMatches.length > 0 && !isConnecting) {
                   setMatches(mappedMatches);
                   setStep("results");

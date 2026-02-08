@@ -154,7 +154,7 @@ export const verifyPdfForRequest = (text: string, request: ReceiptRequest): { is
     // --- 3. MERCHANT CHECK ---
     let merchantFound = false;
     const merchantLower = request.merchant.toLowerCase();
-    const STOP_WORDS = new Set(["oy", "ab", "ltd", "inc", "corp", "gmbh", "the", "and", "for", "co", "llc"]);
+    const STOP_WORDS = new Set(["oy", "ab", "ltd", "inc", "corp", "gmbh", "the", "and", "for", "co", "llc", "com", "cc", "www", "net", "org", "fi", "se", "no", "dk", "de", "uk", "eu", "info", "io"]);
     const tokens = merchantLower.split(/[^a-z0-9]+/g).filter(t => t.length >= 2 && !STOP_WORDS.has(t));
 
     for (const token of tokens) {
