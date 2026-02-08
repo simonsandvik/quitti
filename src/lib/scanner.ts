@@ -104,6 +104,7 @@ export const scanEmails = async (
             updateProgress(`Searching for PDF attachments...`, 0);
 
             let pdfList: { messageId: string; attachmentId: string; attachmentName: string; emailDate: Date }[] = [];
+            let ocrWorker: any = null;
 
             try {
                 if (provider === "google") {
@@ -126,7 +127,16 @@ export const scanEmails = async (
                 pdfList = uniquePdfList;
 
                 console.log(`[Scanner] Found ${pdfList.length} PDF attachments in date range`);
-                updateProgress(`Found ${pdfList.length} PDFs. Checking content...`, 10);
+                updateProgress(`Found ${pdfList.length} PDFs. Initializing OCR...`, 10);
+
+                // Initialize shared Tesseract OCR worker (one worker for all PDFs = fast)
+                try {
+                    const { createWorker } = await import('tesseract.js');
+                    ocrWorker = await createWorker('eng+fin+swe');
+                    console.log('[Scanner] OCR worker initialized (eng+fin+swe)');
+                } catch (ocrInitErr) {
+                    console.error('[Scanner] Failed to initialize OCR worker:', ocrInitErr);
+                }
 
                 // Track which requests are still unmatched
                 const unmatchedRequests = new Set(requests.map(r => r.id));
@@ -151,12 +161,12 @@ export const scanEmails = async (
                             continue;
                         }
 
-                        // Extract text from PDF — use Uint8Array directly to avoid extra Buffer copy
+                        // Extract text from PDF (with OCR fallback for scanned PDFs)
                         const arrayBuffer = await blob.arrayBuffer();
-                        const text = await parsePdfContent(new Uint8Array(arrayBuffer));
+                        const text = await parsePdfContent(new Uint8Array(arrayBuffer), ocrWorker);
 
                         if (!text.trim()) {
-                            console.log(`[Scanner] No text in ${pdf.attachmentName} (skipping)`);
+                            console.log(`[Scanner] No text in ${pdf.attachmentName} (skipping - text extraction and OCR both failed)`);
                             continue;
                         }
 
@@ -212,8 +222,22 @@ export const scanEmails = async (
 
                 console.log(`[Scanner] PDF-First scan complete. Matched ${foundCount}/${requests.length} receipts.`);
 
+                // Terminate OCR worker to free memory
+                if (ocrWorker) {
+                    try {
+                        await ocrWorker.terminate();
+                        console.log('[Scanner] OCR worker terminated');
+                    } catch (e) {
+                        // Ignore termination errors
+                    }
+                }
+
             } catch (e) {
                 console.error(`[Scanner] PDF search failed for ${provider}`, e);
+                // Clean up OCR worker on error too
+                if (ocrWorker) {
+                    try { await ocrWorker.terminate(); } catch (_) {}
+                }
             }
         } else if (!provider || !token) {
             // Demo Mode / Mock

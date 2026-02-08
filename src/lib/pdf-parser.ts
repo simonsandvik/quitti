@@ -8,7 +8,7 @@ export interface PdfContentMatch {
     hasHardAmountMismatch?: boolean;
 }
 
-export const parsePdfContent = async (buffer: Uint8Array | Buffer): Promise<string> => {
+export const parsePdfContent = async (buffer: Uint8Array | Buffer, ocrWorker?: any): Promise<string> => {
     // Only run in browser - pdfjs-dist requires DOM APIs
     if (typeof window === "undefined") {
         console.log("[PDF Parser] Skipping - not in browser environment");
@@ -44,13 +44,41 @@ export const parsePdfContent = async (buffer: Uint8Array | Buffer): Promise<stri
             page.cleanup(); // Release page resources
         }
 
+        // OCR FALLBACK: If no text layer and PDF is short (receipt-sized), try OCR
+        if (!fullText.trim() && ocrWorker && pdf.numPages <= 3) {
+            console.log(`[PDF Parser] No text layer. Running OCR on page 1 (${pdf.numPages} pages)...`);
+            try {
+                const page = await pdf.getPage(1);
+                const viewport = page.getViewport({ scale: 2.0 }); // 2x scale for better OCR quality
+                const canvas = document.createElement('canvas');
+                canvas.width = viewport.width;
+                canvas.height = viewport.height;
+                const ctx = canvas.getContext('2d')!;
+                await page.render({ canvasContext: ctx, viewport, canvas } as any).promise;
+                page.cleanup();
+
+                // Convert canvas to image blob for Tesseract
+                const imageBlob = await new Promise<Blob>((resolve) => {
+                    canvas.toBlob((blob) => resolve(blob!), 'image/png');
+                });
+
+                const { data: { text } } = await ocrWorker.recognize(imageBlob);
+                fullText = text;
+                console.log(`[PDF Parser] OCR extracted ${text.length} chars`);
+
+                // Clean up canvas
+                canvas.width = 0;
+                canvas.height = 0;
+            } catch (ocrErr) {
+                console.error("[PDF Parser] OCR failed:", ocrErr);
+            }
+        } else if (!fullText.trim()) {
+            const reason = !ocrWorker ? "no OCR worker" : pdf.numPages > 3 ? `too many pages (${pdf.numPages})` : "unknown";
+            console.log(`[PDF Parser] No text layer found. Skipping (${reason}).`);
+        }
+
         // CRITICAL: Destroy PDF document to free memory (prevents tab crash on 900+ PDFs)
         pdf.destroy();
-
-        // No OCR fallback - if PDF has no text layer, return empty string
-        if (!fullText.trim()) {
-            console.log("[PDF Parser] No text layer found. Skipping (no OCR).");
-        }
 
         return fullText;
     } catch (e) {
