@@ -67,17 +67,23 @@ export async function updateMatchResultServerAction(
 
     const supabaseAdmin = getSupabaseAdmin();
 
+    // Delete any existing match for this request (avoids unique constraint issues)
+    await supabaseAdmin
+        .from('matched_receipts')
+        .delete()
+        .eq('request_id', requestId);
+
     const { error } = await supabaseAdmin
         .from('matched_receipts')
-        .upsert({
+        .insert({
             request_id: requestId,
-            file_url: storagePath || 'N/A', // Store path if available
+            file_url: storagePath || 'N/A',
             matched_by: userId,
             confidence: match.confidence,
             details: match.details,
             matched_html: match.matchedHtml,
             matched_data: match.matchedData
-        }, { onConflict: 'request_id' });
+        });
 
     if (error) {
         console.error("Server Action DB Error:", JSON.stringify(error), "Payload:", { requestId, userId, storagePath });
