@@ -41,7 +41,11 @@ export const parsePdfContent = async (buffer: Uint8Array | Buffer): Promise<stri
                 .map((item: any) => item.str)
                 .join(" ");
             fullText += pageText + "\n";
+            page.cleanup(); // Release page resources
         }
+
+        // CRITICAL: Destroy PDF document to free memory (prevents tab crash on 900+ PDFs)
+        pdf.destroy();
 
         // No OCR fallback - if PDF has no text layer, return empty string
         if (!fullText.trim()) {

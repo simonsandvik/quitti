@@ -151,10 +151,9 @@ export const scanEmails = async (
                             continue;
                         }
 
-                        // Extract text from PDF
+                        // Extract text from PDF — use Uint8Array directly to avoid extra Buffer copy
                         const arrayBuffer = await blob.arrayBuffer();
-                        const buffer = Buffer.from(arrayBuffer);
-                        const text = await parsePdfContent(buffer);
+                        const text = await parsePdfContent(new Uint8Array(arrayBuffer));
 
                         if (!text.trim()) {
                             console.log(`[Scanner] No text in ${pdf.attachmentName} (skipping)`);
