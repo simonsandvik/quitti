@@ -115,8 +115,9 @@ export const verifyPdfMatch = async (buffer: Uint8Array | Buffer, request: Recei
 };
 
 /**
- * Simple PDF verification: checks if PDF contains amount, date (±3 days), and merchant name.
- * Returns true only if ALL three criteria are found.
+ * PDF verification: checks if PDF contains amount, date (±3 days), and merchant name.
+ * Matches if amount is found AND at least one of (date, merchant) also matches.
+ * Amount is always required — date + merchant alone is not enough.
  */
 export const verifyPdfForRequest = (text: string, request: ReceiptRequest): { isMatch: boolean; details: string[]; dateOffset: number } => {
     const normText = text.toLowerCase().replace(/\s+/g, ' ');
@@ -195,7 +196,7 @@ export const verifyPdfForRequest = (text: string, request: ReceiptRequest): { is
         // TLDs and web
         "com", "cc", "www", "net", "org", "fi", "se", "no", "dk", "de", "uk", "eu", "info", "io",
         // Common words
-        "the", "and", "for", "pay", "mob",
+        "the", "and", "for", "pay", "mob", "gsuite",
         // Countries and cities (Nordic focus)
         "finland", "sweden", "norway", "denmark", "ireland", "dublin",
         "helsinki", "vasa", "turku", "tampere", "oulu", "espoo",
@@ -223,12 +224,13 @@ export const verifyPdfForRequest = (text: string, request: ReceiptRequest): { is
         }
     }
 
-    // --- RESULT: All 3 must pass ---
+    // --- RESULT: Amount is required + at least one of (date, merchant) ---
     if (!amountFound) details.push(`Amount NOT found: ${amountStr}`);
     if (!dateFound) details.push(`Date NOT found within ±3 days of ${request.date}`);
     if (!merchantFound) details.push(`Merchant NOT found: ${tokens.join(', ')}`);
 
-    const isMatch = amountFound && dateFound && merchantFound;
+    // Amount is always required. Then need at least date OR merchant.
+    const isMatch = amountFound && (dateFound || merchantFound);
 
     return { isMatch, details, dateOffset };
 };
