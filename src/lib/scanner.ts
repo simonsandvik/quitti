@@ -147,44 +147,50 @@ export const scanEmails = async (
                             continue;
                         }
 
-                        // Try to match against unmatched requests
+                        // Try to match against ALL unmatched requests, pick the best one (closest date)
+                        let bestMatch: { reqId: string; req: ReceiptRequest; details: string[]; dateOffset: number } | null = null;
+
                         for (const reqId of unmatchedRequests) {
                             const req = requests.find(r => r.id === reqId)!;
-                            const { isMatch, details } = verifyPdfForRequest(text, req);
+                            const { isMatch, details, dateOffset } = verifyPdfForRequest(text, req);
 
-                            if (isMatch) {
-                                console.log(`[Scanner] ✓ Matched ${req.merchant} (${req.amount}) to ${pdf.attachmentName}`);
-                                console.log(`[Scanner]   Details: ${details.join(', ')}`);
-
-                                // Save the file
-                                const file = new File([blob], pdf.attachmentName, { type: "application/pdf" });
-                                files[req.id] = file;
-                                foundCount++;
-                                pdfCount++;
-
-                                // Record the match
-                                matches.push({
-                                    receiptId: req.id,
-                                    emailId: pdf.messageId,
-                                    status: "FOUND",
-                                    confidence: 100,
-                                    details: `PDF match: ${pdf.attachmentName} (${details.join(', ')})`
-                                });
-
-                                // Upload to cloud if userId provided
-                                if (userId) {
-                                    try {
-                                        const storagePath = await uploadReceiptFile(userId, req.id, file);
-                                        console.log(`[Cloud Sync] Uploaded: ${storagePath}`);
-                                    } catch (e) {
-                                        console.error(`[Cloud Sync] Failed to upload ${pdf.attachmentName}`, e);
-                                    }
-                                }
-
-                                unmatchedRequests.delete(reqId);
-                                updateProgress(`Matched ${req.merchant}!`, progressPercent);
-                                break; // One PDF per request, move to next PDF
+                            if (isMatch && (!bestMatch || dateOffset < bestMatch.dateOffset)) {
+                                bestMatch = { reqId, req, details, dateOffset };
                             }
+                        }
+
+                        if (bestMatch) {
+                            const { reqId, req, details } = bestMatch;
+                            console.log(`[Scanner] ✓ Matched ${req.merchant} (${req.amount}) to ${pdf.attachmentName}`);
+                            console.log(`[Scanner]   Details: ${details.join(', ')}`);
+
+                            // Save the file
+                            const file = new File([blob], pdf.attachmentName, { type: "application/pdf" });
+                            files[req.id] = file;
+                            foundCount++;
+                            pdfCount++;
+
+                            // Record the match
+                            matches.push({
+                                receiptId: req.id,
+                                emailId: pdf.messageId,
+                                status: "FOUND",
+                                confidence: 100,
+                                details: `PDF match: ${pdf.attachmentName} (${details.join(', ')})`
+                            });
+
+                            // Upload to cloud if userId provided
+                            if (userId) {
+                                try {
+                                    const storagePath = await uploadReceiptFile(userId, req.id, file);
+                                    console.log(`[Cloud Sync] Uploaded: ${storagePath}`);
+                                } catch (e) {
+                                    console.error(`[Cloud Sync] Failed to upload ${pdf.attachmentName}`, e);
+                                }
+                            }
+
+                            unmatchedRequests.delete(reqId);
+                            updateProgress(`Matched ${req.merchant}!`, progressPercent);
                         }
                     } catch (e) {
                         console.error(`[Scanner] Error processing ${pdf.attachmentName}`, e);

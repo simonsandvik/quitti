@@ -86,12 +86,12 @@ export const verifyPdfMatch = async (buffer: Uint8Array | Buffer, request: Recei
  * Simple PDF verification: checks if PDF contains amount, date (±3 days), and merchant name.
  * Returns true only if ALL three criteria are found.
  */
-export const verifyPdfForRequest = (text: string, request: ReceiptRequest): { isMatch: boolean; details: string[] } => {
+export const verifyPdfForRequest = (text: string, request: ReceiptRequest): { isMatch: boolean; details: string[]; dateOffset: number } => {
     const normText = text.toLowerCase().replace(/\s+/g, ' ');
     const details: string[] = [];
 
     if (!text.trim()) {
-        return { isMatch: false, details: ["No text extracted from PDF"] };
+        return { isMatch: false, details: ["No text extracted from PDF"], dateOffset: Infinity };
     }
 
     // --- 1. AMOUNT CHECK (required) ---
@@ -118,6 +118,7 @@ export const verifyPdfForRequest = (text: string, request: ReceiptRequest): { is
 
     // --- 2. DATE CHECK (±3 days) ---
     let dateFound = false;
+    let dateOffset = Infinity;
     const reqDate = new Date(request.date);
 
     for (let offset = -3; offset <= 3 && !dateFound; offset++) {
@@ -143,6 +144,7 @@ export const verifyPdfForRequest = (text: string, request: ReceiptRequest): { is
         for (const f of formats) {
             if (normText.includes(f)) {
                 dateFound = true;
+                dateOffset = Math.abs(offset);
                 details.push(`Date found: ${f} (offset: ${offset}d)`);
                 break;
             }
@@ -178,5 +180,5 @@ export const verifyPdfForRequest = (text: string, request: ReceiptRequest): { is
 
     const isMatch = amountFound && dateFound && merchantFound;
 
-    return { isMatch, details };
+    return { isMatch, details, dateOffset };
 };
