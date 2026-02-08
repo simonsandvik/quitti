@@ -109,6 +109,13 @@ export default function Home() {
   useEffect(() => {
     if (status === "authenticated" && (session?.user as any)?.id && !isDemo) {
       const loadCloudData = async () => {
+        // Skip cloud loading during OAuth connect flow — we want a fresh scan, not stale data
+        const isConnecting = sessionStorage.getItem("quitti-is-connecting") === "true";
+        if (isConnecting) {
+          console.log("[Cloud] Skipping cloud load - OAuth connecting flow active");
+          return;
+        }
+
         try {
           const { data: batches, error } = await supabase
             .from('batches')
