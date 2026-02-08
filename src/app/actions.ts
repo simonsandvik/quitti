@@ -69,7 +69,7 @@ export async function updateMatchResultServerAction(
 
     const { error } = await supabaseAdmin
         .from('matched_receipts')
-        .insert({
+        .upsert({
             request_id: requestId,
             file_url: storagePath || 'N/A', // Store path if available
             matched_by: userId,
@@ -77,7 +77,7 @@ export async function updateMatchResultServerAction(
             details: match.details,
             matched_html: match.matchedHtml,
             matched_data: match.matchedData
-        });
+        }, { onConflict: 'request_id' });
 
     if (error) {
         console.error("Server Action DB Error:", JSON.stringify(error), "Payload:", { requestId, userId, storagePath });

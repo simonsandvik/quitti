@@ -431,8 +431,8 @@ export default function Home() {
       setStep("results");
       // Unlock happens implicitly as we leave searching state, but good practice to reset
       isSearchingRef.current = false;
-    } catch (err) {
-      console.error(err);
+    } catch (err: any) {
+      console.error("[TriggerSearch] Error:", err?.message || err?.code || err);
       setStep("results");
       isSearchingRef.current = false;
     }

@@ -112,6 +112,19 @@ export const scanEmails = async (
                     pdfList = await searchOutlookForPdfs(token, minDate, maxDate, (msg) => updateProgress(msg, 0));
                 }
 
+                // Deduplicate PDFs by messageId+attachmentId (Outlook pagination can return overlaps)
+                const seenPdfs = new Set<string>();
+                const uniquePdfList = pdfList.filter(pdf => {
+                    const key = `${pdf.messageId}:${pdf.attachmentId}`;
+                    if (seenPdfs.has(key)) return false;
+                    seenPdfs.add(key);
+                    return true;
+                });
+                if (uniquePdfList.length < pdfList.length) {
+                    console.log(`[Scanner] Deduplicated: ${pdfList.length} → ${uniquePdfList.length} unique PDFs`);
+                }
+                pdfList = uniquePdfList;
+
                 console.log(`[Scanner] Found ${pdfList.length} PDF attachments in date range`);
                 updateProgress(`Found ${pdfList.length} PDFs. Checking content...`, 10);
 
