@@ -115,9 +115,8 @@ export const verifyPdfMatch = async (buffer: Uint8Array | Buffer, request: Recei
 };
 
 /**
- * PDF verification: checks if PDF contains amount, date (±3 days), and merchant name.
- * Matches if amount is found AND at least one of (date, merchant) also matches.
- * Amount is always required — date + merchant alone is not enough.
+ * PDF verification: checks if PDF contains amount and date (±3 days).
+ * Merchant is logged but not required — credit card statement names often differ from receipt text.
  */
 export const verifyPdfForRequest = (text: string, request: ReceiptRequest): { isMatch: boolean; details: string[]; dateOffset: number } => {
     const normText = text.toLowerCase().replace(/\s+/g, ' ');
@@ -224,13 +223,14 @@ export const verifyPdfForRequest = (text: string, request: ReceiptRequest): { is
         }
     }
 
-    // --- RESULT: Amount is required + at least one of (date, merchant) ---
+    // --- RESULT: Amount + Date required. Merchant is informational only. ---
     if (!amountFound) details.push(`Amount NOT found: ${amountStr}`);
     if (!dateFound) details.push(`Date NOT found within ±3 days of ${request.date}`);
     if (!merchantFound) details.push(`Merchant NOT found: ${tokens.join(', ')}`);
 
-    // Amount is always required. Then need at least date OR merchant.
-    const isMatch = amountFound && (dateFound || merchantFound);
+    // Amount + date is specific enough to identify a receipt.
+    // Merchant is not required — credit card names often differ from receipt text.
+    const isMatch = amountFound && dateFound;
 
     return { isMatch, details, dateOffset };
 };
