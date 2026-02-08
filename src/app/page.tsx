@@ -68,13 +68,14 @@ export default function Home() {
       }
     }
 
-    // Sessions
+    // Sessions — filter out stale entries without email
     const savedSessions = localStorage.getItem("quitti-sessions");
     if (savedSessions) {
       try {
         const parsed = JSON.parse(savedSessions);
         if (Array.isArray(parsed)) {
-          setSessions(parsed);
+          const valid = parsed.filter((s: any) => s?.user?.email);
+          setSessions(valid);
         }
       } catch (e) {
         console.error("Failed to load saved sessions", e);

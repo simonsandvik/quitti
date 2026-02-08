@@ -54,23 +54,24 @@ export const scanEmails = async (
 
     onProgress?.("Initializing scan...", 0, 0, 0);
 
+    // Filter out invalid sessions (no email or no token)
+    const validSessions = sessions.filter(s => s?.user?.email && s?.accessToken);
+    if (validSessions.length < sessions.length) {
+        console.log(`[Scanner] Filtered out ${sessions.length - validSessions.length} invalid session(s) (missing email or token)`);
+    }
+
     // Calculate total work for progress bar
-    // Scanning (requests * sessions) + Matching (requests)
-    // Total Steps = (Sessions * Requests).
-    // Each request performed is 1 step.
-    const totalSteps = sessions.length * requests.length;
+    const totalSteps = Math.max(validSessions.length * requests.length, 1);
     let completedSteps = 0;
 
     const updateProgress = (msg: string, currentSessionProgress: number = 0) => {
-        // currentSessionProgress is how many requests the CURRENT session has finished (or is working on)
-        // totalProgress = completedSteps (from previous sessions) + currentSessionProgress
         const totalProgress = completedSteps + currentSessionProgress;
         const percent = Math.min(Math.round((totalProgress / totalSteps) * 100), 100);
         onProgress?.(msg, percent, foundCount, pdfCount);
     };
 
     // Process all sessions
-    for (const session of sessions) {
+    for (const session of validSessions) {
         let sessionCandidates: EmailCandidate[] = [];
         const provider = (session?.provider === "google" ? "google" : (session?.provider === "azure-ad" ? "azure-ad" : (session?.provider === "facebook" ? "facebook" : undefined))) as "google" | "azure-ad" | "facebook" | undefined;
         const token = session?.accessToken;
