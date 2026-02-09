@@ -271,16 +271,17 @@ export const scanEmails = async (
 
                         // --- 3. LLM fallback (only if rule-based didn't match) ---
                         if (useLLM) {
-                            // Bucket B: skip LLM if no candidate amount found in text
+                            // Bucket B: only send candidates whose amount appears in text (1-3 instead of 50-100)
+                            let llmCandidates = activeReqs;
                             if (bucket === 'B') {
-                                const hasAnyAmount = activeReqs.some(r => textContainsAmount(text, r.amount));
-                                if (!hasAnyAmount) return;
+                                llmCandidates = activeReqs.filter(r => textContainsAmount(text, r.amount));
+                                if (llmCandidates.length === 0) return;
                             }
 
                             const { verifyReceiptWithLLMAction } = await import("@/app/actions");
                             const result = await verifyReceiptWithLLMAction(
                                 text,
-                                activeReqs.map(r => ({ id: r.id, amount: r.amount, date: r.date, merchant: r.merchant, currency: r.currency })),
+                                llmCandidates.map(r => ({ id: r.id, amount: r.amount, date: r.date, merchant: r.merchant, currency: r.currency })),
                                 { subject: pdf.emailSubject || '', sender: pdf.emailSender || '', filename: pdf.attachmentName }
                             );
 
@@ -961,94 +962,6 @@ export const scanEmails = async (
 
     // ==========================================
     // Final LLM Verification Pass
-    // ==========================================
-    // Group matches by merchant and verify correct pairing
-    // Only for merchants with 2+ matches (single matches can't be swapped)
-    if (foundCount > 0) {
-        let hasLLM = false;
-        try {
-            const { checkLLMAvailableAction } = await import("@/app/actions");
-            hasLLM = await checkLLMAvailableAction();
-        } catch (_) {}
-
-        if (hasLLM) {
-            console.log(`[Scanner] Starting final LLM verification of ${foundCount} matches`);
-            updateProgress(`Verifying match accuracy...`, 96);
-
-            // Group FOUND matches by normalized merchant name
-            const merchantGroups = new Map<string, { match: MatchResult; req: ReceiptRequest }[]>();
-            for (const match of matches) {
-                if (match.status !== "FOUND") continue;
-                const req = requests.find(r => r.id === match.receiptId);
-                if (!req) continue;
-                // Normalize merchant to first significant token for grouping
-                const tokens = req.merchant.toLowerCase().split(/[^a-z0-9]+/g).filter(t => t.length >= 3);
-                const groupKey = tokens[0] || req.merchant.toLowerCase();
-                const group = merchantGroups.get(groupKey) || [];
-                group.push({ match, req });
-                merchantGroups.set(groupKey, group);
-            }
-
-            for (const [merchant, group] of merchantGroups) {
-                if (group.length < 2) continue;
-
-                console.log(`[Scanner] Verifying ${group.length} matches for "${merchant}"`);
-
-                const payload = group.map(({ match, req }) => ({
-                    receiptId: req.id,
-                    merchant: req.merchant,
-                    amount: req.amount,
-                    date: req.date,
-                    currency: req.currency,
-                    pdfText: extractedTexts[req.id] || match.details,
-                    emailSubject: match.details
-                }));
-
-                try {
-                    const { verifyMatchGroupAction } = await import("@/app/actions");
-                    const result = await verifyMatchGroupAction(payload);
-
-                    if (!result.verified && result.reassignments.length > 0) {
-                        console.log(`[Scanner] ⚠ Reassigning ${result.reassignments.length} matches for "${merchant}": ${result.reasoning}`);
-
-                        // Apply reassignments: swap files between receipt IDs
-                        for (const { receiptId, shouldMatchTo } of result.reassignments) {
-                            const file1 = files[receiptId];
-                            const file2 = files[shouldMatchTo];
-                            if (file1 && file2) {
-                                files[shouldMatchTo] = file1;
-                                files[receiptId] = file2;
-
-                                // Also swap extracted texts
-                                const text1 = extractedTexts[receiptId];
-                                const text2 = extractedTexts[shouldMatchTo];
-                                if (text1) extractedTexts[shouldMatchTo] = text1;
-                                if (text2) extractedTexts[receiptId] = text2;
-
-                                // Re-upload swapped files if userId available
-                                if (userId) {
-                                    try {
-                                        await uploadReceiptFile(userId, receiptId, files[receiptId]);
-                                        await uploadReceiptFile(userId, shouldMatchTo, files[shouldMatchTo]);
-                                        console.log(`[Cloud Sync] Re-uploaded swapped files for ${receiptId} ↔ ${shouldMatchTo}`);
-                                    } catch (e) {
-                                        console.error(`[Cloud Sync] Failed to re-upload swapped files`, e);
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        console.log(`[Scanner] ✓ Verified ${group.length} matches for "${merchant}"`);
-                    }
-                } catch (e) {
-                    console.error(`[Scanner] Verification failed for "${merchant}"`, e);
-                }
-            }
-
-            console.log(`[Scanner] Final verification complete.`);
-        }
-    }
-
     // Final check for missing items (stream didn't find them)
     for (const req of requests) {
         if (!files[req.id]) {

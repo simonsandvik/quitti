@@ -248,7 +248,7 @@ export async function verifyReceiptWithLLMAction(
         return { matchId: null, confidence: 0, reasoning: "No ANTHROPIC_API_KEY configured" };
     }
 
-    const text = pdfText.slice(0, 6000);
+    const text = pdfText.slice(0, 3000);
 
     const candidateList = candidates.map((c, i) =>
         `${i + 1}. Amount: ${c.amount} ${c.currency}, Date: ${c.date}, Merchant: "${c.merchant}"`
