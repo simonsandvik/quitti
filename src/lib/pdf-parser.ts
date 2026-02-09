@@ -148,33 +148,61 @@ export const verifyPdfForRequest = (text: string, request: ReceiptRequest): { is
         details.push(`Amount found (integer): ${amountInt}`);
     }
 
-    // --- 2. DATE CHECK (±3 days) ---
+    // --- 2. DATE CHECK (±5 days, comprehensive formats) ---
     let dateFound = false;
     let dateOffset = Infinity;
     const reqDate = new Date(request.date);
 
-    for (let offset = -3; offset <= 3 && !dateFound; offset++) {
+    const MONTH_NAMES_FI = ['tammikuu', 'helmikuu', 'maaliskuu', 'huhtikuu', 'toukokuu', 'kesäkuu', 'heinäkuu', 'elokuu', 'syyskuu', 'lokakuu', 'marraskuu', 'joulukuu'];
+    const MONTH_NAMES_SV = ['januari', 'februari', 'mars', 'april', 'maj', 'juni', 'juli', 'augusti', 'september', 'oktober', 'november', 'december'];
+    const MONTH_NAMES_EN = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+    const MONTH_ABBR_FI = ['tammi', 'helmi', 'maalis', 'huhti', 'touko', 'kesä', 'heinä', 'elo', 'syys', 'loka', 'marras', 'joulu'];
+    const MONTH_ABBR_EN = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+
+    for (let offset = -5; offset <= 5 && !dateFound; offset++) {
         const d = new Date(reqDate);
         d.setDate(d.getDate() + offset);
         const day = d.getDate();
         const month = d.getMonth() + 1;
         const year = d.getFullYear();
+        const yy = (year % 100).toString().padStart(2, '0');
+        const dd = day.toString().padStart(2, '0');
+        const mm = month.toString().padStart(2, '0');
+        const monthIdx = d.getMonth();
 
         const formats = [
-            // ISO format
-            `${year}-${month.toString().padStart(2, '0')}-${day.toString().padStart(2, '0')}`,
-            // European formats
-            `${day}.${month}.${year}`,
-            `${day.toString().padStart(2, '0')}.${month.toString().padStart(2, '0')}.${year}`,
-            `${day}/${month}/${year}`,
-            `${day.toString().padStart(2, '0')}/${month.toString().padStart(2, '0')}/${year}`,
-            // US format
-            `${month}/${day}/${year}`,
-            `${month.toString().padStart(2, '0')}/${day.toString().padStart(2, '0')}/${year}`,
+            // ISO
+            `${year}-${mm}-${dd}`,
+            // European with 4-digit year
+            `${day}.${month}.${year}`, `${dd}.${mm}.${year}`,
+            `${day}/${month}/${year}`, `${dd}/${mm}/${year}`,
+            `${day}-${month}-${year}`, `${dd}-${mm}-${year}`,
+            // European with 2-digit year
+            `${day}.${month}.${yy}`, `${dd}.${mm}.${yy}`,
+            `${day}/${month}/${yy}`, `${dd}/${mm}/${yy}`,
+            `${day}-${month}-${yy}`, `${dd}-${mm}-${yy}`,
+            // US with 4-digit year
+            `${month}/${day}/${year}`, `${mm}/${dd}/${year}`,
+            // US with 2-digit year
+            `${month}/${day}/${yy}`, `${mm}/${dd}/${yy}`,
+            // Finnish month names: "15. tammikuuta 2024" or "15 tammikuu 2024"
+            `${day}. ${MONTH_NAMES_FI[monthIdx]}ta ${year}`,
+            `${day} ${MONTH_NAMES_FI[monthIdx]} ${year}`,
+            `${day}. ${MONTH_ABBR_FI[monthIdx]} ${year}`,
+            // Swedish month names: "15 januari 2024" or "den 15 januari 2024"
+            `${day} ${MONTH_NAMES_SV[monthIdx]} ${year}`,
+            `den ${day} ${MONTH_NAMES_SV[monthIdx]} ${year}`,
+            // English month names: "15 January 2024", "Jan 15, 2024"
+            `${day} ${MONTH_NAMES_EN[monthIdx]} ${year}`,
+            `${MONTH_ABBR_EN[monthIdx]} ${day}, ${year}`,
+            `${MONTH_ABBR_EN[monthIdx]} ${dd}, ${year}`,
+            `${MONTH_NAMES_EN[monthIdx]} ${day}, ${year}`,
+            // Compact: "15jan2024", "20240115" (common in filenames/IDs)
+            `${year}${mm}${dd}`,
         ];
 
         for (const f of formats) {
-            if (normText.includes(f)) {
+            if (normText.includes(f.toLowerCase())) {
                 dateFound = true;
                 dateOffset = Math.abs(offset);
                 details.push(`Date found: ${f} (offset: ${offset}d)`);
@@ -183,19 +211,17 @@ export const verifyPdfForRequest = (text: string, request: ReceiptRequest): { is
         }
     }
 
-    // --- 3. MERCHANT CHECK ---
+    // --- 3. MERCHANT CHECK (strict: min 5-char tokens to avoid false positives) ---
     let merchantFound = false;
-    // Only use text before first comma — everything after is usually location/currency info
-    // e.g. "JJ KROGEN AB, VASA" → "JJ KROGEN AB"
-    // e.g. "BOLT.EU/O/2508270802, DKK 127,00 Koebenhavn KURSSI: 7,2989" → "BOLT.EU/O/2508270802"
     const merchantPart = request.merchant.split(',')[0].toLowerCase();
     const STOP_WORDS = new Set([
         // Corporate suffixes
-        "oy", "ab", "ltd", "inc", "corp", "gmbh", "co", "llc", "sa", "ag",
+        "oy", "ab", "ltd", "inc", "corp", "gmbh", "co", "llc", "sa", "ag", "oyj",
         // TLDs and web
         "com", "cc", "www", "net", "org", "fi", "se", "no", "dk", "de", "uk", "eu", "info", "io",
         // Common words
-        "the", "and", "for", "pay", "mob", "gsuite",
+        "the", "and", "for", "pay", "mob", "gsuite", "google", "payment", "invoice",
+        "receipt", "total", "amount", "price", "charge", "service", "services",
         // Countries and cities (Nordic focus)
         "finland", "sweden", "norway", "denmark", "ireland", "dublin",
         "helsinki", "vasa", "turku", "tampere", "oulu", "espoo",
@@ -204,33 +230,37 @@ export const verifyPdfForRequest = (text: string, request: ReceiptRequest): { is
         "eur", "usd", "gbp", "sek", "nok", "dkk", "kurssi",
     ]);
     const tokens = merchantPart
-        .split(/[^a-z]+/g) // Only alphabetic tokens (filters out numbers like "00", "2508270802")
-        .filter(t => t.length >= 3 && !STOP_WORDS.has(t)); // Min 3 chars to avoid "nh", "jj" etc.
+        .split(/[^a-z]+/g)
+        .filter(t => t.length >= 4 && !STOP_WORDS.has(t));
 
     for (const token of tokens) {
-        if (token.length < 4) {
-            // Short tokens need word boundary to avoid false positives
-            const regex = new RegExp(`\\b${token}\\b`, 'i');
-            if (regex.test(normText)) {
+        if (token.length >= 7) {
+            // Long tokens (finnair, microsoft): substring match is safe
+            if (normText.includes(token)) {
                 merchantFound = true;
                 details.push(`Merchant found: "${token}"`);
                 break;
             }
-        } else if (normText.includes(token)) {
-            merchantFound = true;
-            details.push(`Merchant found: "${token}"`);
-            break;
+        } else {
+            // Short tokens (stape, bolt): require word boundary to avoid false positives
+            const regex = new RegExp(`\\b${token}\\b`, 'i');
+            if (regex.test(normText)) {
+                merchantFound = true;
+                details.push(`Merchant found (boundary): "${token}"`);
+                break;
+            }
         }
     }
 
-    // --- RESULT: Amount + Date required. Merchant is informational only. ---
+    // --- RESULT: Amount required + (Date OR Merchant) ---
     if (!amountFound) details.push(`Amount NOT found: ${amountStr}`);
-    if (!dateFound) details.push(`Date NOT found within ±3 days of ${request.date}`);
+    if (!dateFound) details.push(`Date NOT found within ±5 days of ${request.date}`);
     if (!merchantFound) details.push(`Merchant NOT found: ${tokens.join(', ')}`);
 
-    // Amount + date is specific enough to identify a receipt.
-    // Merchant is not required — credit card names often differ from receipt text.
-    const isMatch = amountFound && dateFound;
+    // Amount is always required. Then need at least one of: date or merchant.
+    // Date formats are now comprehensive (FI/SV/EN months, 2-digit years, etc.)
+    // Merchant matching uses word boundaries for short tokens to reduce false positives.
+    const isMatch = amountFound && (dateFound || merchantFound);
 
     return { isMatch, details, dateOffset };
 };
