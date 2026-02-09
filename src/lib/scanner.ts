@@ -224,23 +224,63 @@ export const scanEmails = async (
                             return;
                         }
 
-                        if (useLLM) {
-                            // Filter to still-unmatched candidates
-                            const stillUnmatched = candidateReqs.filter(r => unmatchedRequests.has(r.id));
-                            if (stillUnmatched.length === 0) return;
+                        // --- 1. Always try rule-based matching first (free, fast) ---
+                        let bestMatch: { reqId: string; req: ReceiptRequest; details: string[]; dateOffset: number } | null = null;
+                        const activeReqs = candidateReqs.filter(r => unmatchedRequests.has(r.id));
+                        if (activeReqs.length === 0) return;
 
+                        for (const req of activeReqs) {
+                            const { isMatch, details, dateOffset } = verifyPdfForRequest(text, req);
+                            if (isMatch && (!bestMatch || dateOffset < bestMatch.dateOffset)) {
+                                bestMatch = { reqId: req.id, req, details, dateOffset };
+                            }
+                        }
+
+                        // --- 2. If rule-based matched, use it directly (no LLM needed) ---
+                        if (bestMatch) {
+                            const { reqId, req, details } = bestMatch;
+                            console.log(`[Scanner] ✓ [${bucket}] Rule-matched ${req.merchant} (${req.amount}) to ${pdf.attachmentName}`);
+
+                            const file = new File([fileBytes], pdf.attachmentName, { type: "application/pdf" });
+                            files[req.id] = file;
+                            extractedTexts[req.id] = text.slice(0, 3000);
+                            foundCount++;
+                            pdfCount++;
+
+                            matches.push({
+                                receiptId: req.id,
+                                emailId: pdf.messageId,
+                                status: "FOUND",
+                                confidence: 100,
+                                details: `Rule match [${bucket}]: ${pdf.attachmentName} (${details.join(', ')})`
+                            });
+
+                            if (userId) {
+                                try {
+                                    const storagePath = await uploadReceiptFile(userId, req.id, file);
+                                    console.log(`[Cloud Sync] Uploaded: ${storagePath}`);
+                                } catch (e) {
+                                    console.error(`[Cloud Sync] Failed to upload ${pdf.attachmentName}`, e);
+                                }
+                            }
+
+                            unmatchedRequests.delete(reqId);
+                            updateProgress(`Matched ${req.merchant}!`, progressPercent);
+                            return;
+                        }
+
+                        // --- 3. LLM fallback (only if rule-based didn't match) ---
+                        if (useLLM) {
                             // Bucket B: skip LLM if no candidate amount found in text
                             if (bucket === 'B') {
-                                const hasAnyAmount = stillUnmatched.some(r => textContainsAmount(text, r.amount));
-                                if (!hasAnyAmount) {
-                                    return;
-                                }
+                                const hasAnyAmount = activeReqs.some(r => textContainsAmount(text, r.amount));
+                                if (!hasAnyAmount) return;
                             }
 
                             const { verifyReceiptWithLLMAction } = await import("@/app/actions");
                             const result = await verifyReceiptWithLLMAction(
                                 text,
-                                stillUnmatched.map(r => ({ id: r.id, amount: r.amount, date: r.date, merchant: r.merchant, currency: r.currency })),
+                                activeReqs.map(r => ({ id: r.id, amount: r.amount, date: r.date, merchant: r.merchant, currency: r.currency })),
                                 { subject: pdf.emailSubject || '', sender: pdf.emailSender || '', filename: pdf.attachmentName }
                             );
 
@@ -278,48 +318,6 @@ export const scanEmails = async (
                             } else {
                                 console.log(`[Scanner] ✗ [${bucket}] LLM rejected ${pdf.attachmentName}: "${result.reasoning}"`);
                             }
-                        } else {
-                            // Rule-based fallback (no API key)
-                            let bestMatch: { reqId: string; req: ReceiptRequest; details: string[]; dateOffset: number } | null = null;
-
-                            for (const req of candidateReqs) {
-                                if (!unmatchedRequests.has(req.id)) continue;
-                                const { isMatch, details, dateOffset } = verifyPdfForRequest(text, req);
-                                if (isMatch && (!bestMatch || dateOffset < bestMatch.dateOffset)) {
-                                    bestMatch = { reqId: req.id, req, details, dateOffset };
-                                }
-                            }
-
-                            if (bestMatch) {
-                                const { reqId, req, details } = bestMatch;
-                                console.log(`[Scanner] ✓ [${bucket}] Rule-matched ${req.merchant} (${req.amount}) to ${pdf.attachmentName}`);
-
-                                const file = new File([fileBytes], pdf.attachmentName, { type: "application/pdf" });
-                                files[req.id] = file;
-                                extractedTexts[req.id] = text.slice(0, 3000);
-                                foundCount++;
-                                pdfCount++;
-
-                                matches.push({
-                                    receiptId: req.id,
-                                    emailId: pdf.messageId,
-                                    status: "FOUND",
-                                    confidence: 100,
-                                    details: `Rule match [${bucket}]: ${pdf.attachmentName} (${details.join(', ')})`
-                                });
-
-                                if (userId) {
-                                    try {
-                                        const storagePath = await uploadReceiptFile(userId, req.id, file);
-                                        console.log(`[Cloud Sync] Uploaded: ${storagePath}`);
-                                    } catch (e) {
-                                        console.error(`[Cloud Sync] Failed to upload ${pdf.attachmentName}`, e);
-                                    }
-                                }
-
-                                unmatchedRequests.delete(reqId);
-                                updateProgress(`Matched ${req.merchant}!`, progressPercent);
-                            }
                         }
                     } catch (e) {
                         console.error(`[Scanner] Error processing ${pdf.attachmentName}`, e);
@@ -355,7 +353,7 @@ export const scanEmails = async (
                 console.log(`[Scanner] Bucket A: ${bucketA.length} merchant-matched PDFs (Bucket B will be built after A completes)`);
 
                 // Process Bucket A: merchant-matched (high priority) — parallel batches
-                const CONCURRENCY = 5;
+                const CONCURRENCY = 10;
                 for (let i = 0; i < bucketA.length; i += CONCURRENCY) {
                     if (unmatchedRequests.size === 0) break;
                     const batch = bucketA.slice(i, i + CONCURRENCY);
