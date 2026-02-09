@@ -247,30 +247,37 @@ export const ResultsTable = ({
         const { extractTextFromPdf } = await import("@/lib/pdf-reader");
         const { matchReceiptByContent } = await import("@/lib/matcher");
 
+        // Check LLM availability once (avoid calling N times in loop)
+        let hasLLM = false;
+        try {
+            const { checkLLMAvailableAction } = await import("@/app/actions");
+            hasLLM = await checkLLMAvailableAction();
+        } catch (_) {}
+
         for (const file of Array.from(files)) {
             let bestMatchId: string | null = null;
             let bestScore = 0;
             const isPdf = file.name.toLowerCase().endsWith('.pdf');
             const isImage = file.type.startsWith('image/');
+            let extractedText = "";
 
             // 1. Try Content Match (PDF or Image)
             if (isPdf || isImage) {
                 try {
-                    let text = "";
                     if (isPdf) {
-                        text = await extractTextFromPdf(file);
+                        extractedText = await extractTextFromPdf(file);
                     } else if (isImage) {
                         const { recognizeText } = await import("@/lib/ocr");
-                        text = await recognizeText(file);
+                        extractedText = await recognizeText(file);
                     }
 
-                    if (text) {
+                    if (extractedText) {
                         for (const req of targetReceipts) {
                             // Skip already found?
                             const status = (matches.find(m => m.receiptId === req.id)?.status || "NOT_FOUND");
                             if (status === "FOUND" || newFiles[req.id]) continue;
 
-                            const { score } = matchReceiptByContent(text, req);
+                            const { score } = matchReceiptByContent(extractedText, req);
                             // UNIFIED LOGIC: Threshold >= 50 matches server logic (Exact Amount = 50)
                             if (score > bestScore && score >= 50) {
                                 bestScore = score;
@@ -283,7 +290,34 @@ export const ResultsTable = ({
                 }
             }
 
-            // 2. Strict Match Required
+            // 2. LLM fallback if rule-based matching failed
+            if (!bestMatchId && hasLLM && extractedText && extractedText.length > 50) {
+                try {
+                    const { verifyReceiptWithLLMAction } = await import("@/app/actions");
+                    const unmatchedReqs = targetReceipts.filter(r => {
+                        const status = matches.find(m => m.receiptId === r.id)?.status || "NOT_FOUND";
+                        return status !== "FOUND" && !newFiles[r.id];
+                    });
+
+                    if (unmatchedReqs.length > 0) {
+                        const result = await verifyReceiptWithLLMAction(
+                            extractedText,
+                            unmatchedReqs.map(r => ({ id: r.id, amount: r.amount, date: r.date, merchant: r.merchant, currency: r.currency })),
+                            { subject: '', sender: '', filename: file.name }
+                        );
+
+                        if (result.matchId && result.confidence >= 50) {
+                            bestMatchId = result.matchId;
+                            bestScore = result.confidence;
+                            console.log(`[Bulk Upload] LLM matched "${file.name}" to ${result.matchId} (${result.confidence}%: ${result.reasoning})`);
+                        }
+                    }
+                } catch (e) {
+                    console.error("[Bulk Upload] LLM matching failed:", e);
+                }
+            }
+
+            // 3. Strict Match Required
             if (bestMatchId) {
                 newFiles[bestMatchId] = file;
                 successCount++;

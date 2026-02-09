@@ -34,7 +34,7 @@ const generateMockEmails = (requests: ReceiptRequest[]): EmailCandidate[] => {
 
 import { searchGmail, searchGmailForPdfs, getGmailAttachment } from "./integrations/gmail";
 import { searchOutlook, searchOutlookForPdfs, getOutlookAttachment } from "./integrations/outlook";
-import { parsePdfContent, verifyPdfForRequest } from "./pdf-parser";
+import { parsePdfContent, verifyPdfForRequest, textContainsAmount } from "./pdf-parser";
 import type { PdfAttachmentInfo } from "./integrations/outlook";
 import { uploadReceiptFile } from "./supabase";
 
@@ -216,6 +216,7 @@ export const scanEmails = async (
                         }
 
                         const arrayBuffer = await blob.arrayBuffer();
+                        const fileBytes = new Uint8Array(arrayBuffer).slice(); // Safe copy — pdfjs transfers the buffer to its worker, detaching the original
                         const text = await parsePdfContent(new Uint8Array(arrayBuffer), ocrWorker);
 
                         if (!text.trim()) {
@@ -227,6 +228,14 @@ export const scanEmails = async (
                             // Filter to still-unmatched candidates
                             const stillUnmatched = candidateReqs.filter(r => unmatchedRequests.has(r.id));
                             if (stillUnmatched.length === 0) return;
+
+                            // Bucket B: skip LLM if no candidate amount found in text
+                            if (bucket === 'B') {
+                                const hasAnyAmount = stillUnmatched.some(r => textContainsAmount(text, r.amount));
+                                if (!hasAnyAmount) {
+                                    return;
+                                }
+                            }
 
                             const { verifyReceiptWithLLMAction } = await import("@/app/actions");
                             const result = await verifyReceiptWithLLMAction(
@@ -241,7 +250,7 @@ export const scanEmails = async (
 
                                 console.log(`[Scanner] ✓ [${bucket}] LLM matched ${req.merchant} (${req.amount}) to ${pdf.attachmentName} (${result.confidence}%: ${result.reasoning})`);
 
-                                const file = new File([blob], pdf.attachmentName, { type: "application/pdf" });
+                                const file = new File([fileBytes], pdf.attachmentName, { type: "application/pdf" });
                                 files[req.id] = file;
                                 extractedTexts[req.id] = text.slice(0, 3000);
                                 foundCount++;
@@ -285,7 +294,7 @@ export const scanEmails = async (
                                 const { reqId, req, details } = bestMatch;
                                 console.log(`[Scanner] ✓ [${bucket}] Rule-matched ${req.merchant} (${req.amount}) to ${pdf.attachmentName}`);
 
-                                const file = new File([blob], pdf.attachmentName, { type: "application/pdf" });
+                                const file = new File([fileBytes], pdf.attachmentName, { type: "application/pdf" });
                                 files[req.id] = file;
                                 extractedTexts[req.id] = text.slice(0, 3000);
                                 foundCount++;
@@ -321,54 +330,84 @@ export const scanEmails = async (
                 const unmatchedReqList = () => [...unmatchedRequests].map(id => requests.find(r => r.id === id)!);
 
                 const bucketA: { pdf: PdfAttachmentInfo; candidates: ReceiptRequest[] }[] = [];
-                const bucketB: PdfAttachmentInfo[] = [];
                 const bucketAIds = new Set<string>();
+
+                // Debug: log VR requests and their tokens to diagnose matching issues
+                const vrReqs = unmatchedReqList().filter(r => r.merchant.toLowerCase().includes('vr'));
+                if (vrReqs.length > 0) {
+                    vrReqs.forEach(r => console.log(`[Debug] VR request: "${r.merchant}" → tokens: [${getMerchantTokens(r.merchant).join(', ')}]`));
+                }
 
                 for (const pdf of pdfList) {
                     const merchantMatches = findMerchantMatches(pdf, unmatchedReqList());
+
+                    // Debug: log VR-related PDFs to diagnose why they may not match
+                    if (pdf.emailSubject?.toLowerCase().includes('vr') || pdf.emailSender?.toLowerCase().includes('vr')) {
+                        console.log(`[Debug] VR PDF: "${pdf.emailSubject}" from ${pdf.emailSender}, file: ${pdf.attachmentName}, bucket A match: ${merchantMatches.length > 0}`);
+                    }
+
                     if (merchantMatches.length > 0) {
                         bucketA.push({ pdf, candidates: merchantMatches });
                         bucketAIds.add(`${pdf.messageId}:${pdf.attachmentId}`);
                     }
                 }
 
-                for (const pdf of pdfList) {
-                    const key = `${pdf.messageId}:${pdf.attachmentId}`;
-                    if (bucketAIds.has(key)) continue;
-                    const dateMatches = findDateProximityMatches(pdf, unmatchedReqList());
-                    if (dateMatches.length > 0) {
-                        bucketB.push(pdf);
-                    }
-                }
+                console.log(`[Scanner] Bucket A: ${bucketA.length} merchant-matched PDFs (Bucket B will be built after A completes)`);
 
-                const skippedCount = pdfList.length - bucketA.length - bucketB.length;
-                console.log(`[Scanner] Bucket A: ${bucketA.length} merchant-matched PDFs, Bucket B: ${bucketB.length} date-proximity, Skipped: ${skippedCount}`);
-
-                // Process Bucket A: merchant-matched (high priority)
-                for (let i = 0; i < bucketA.length; i++) {
+                // Process Bucket A: merchant-matched (high priority) — parallel batches
+                const CONCURRENCY = 5;
+                for (let i = 0; i < bucketA.length; i += CONCURRENCY) {
                     if (unmatchedRequests.size === 0) break;
-                    const { pdf, candidates } = bucketA[i];
-                    const progressPercent = 10 + Math.floor((i / (bucketA.length + bucketB.length)) * 85);
-                    const merchantNames = [...new Set(candidates.map(c => c.merchant))].slice(0, 3).join(', ');
-                    updateProgress(`[A] ${i + 1}/${bucketA.length}: ${pdf.attachmentName} (${merchantNames})...`, progressPercent);
-                    console.log(`[Scanner] [A] Downloading ${pdf.attachmentName} (matches: ${merchantNames})`);
-                    await processPdf(pdf, candidates, 'A', progressPercent);
+                    const batch = bucketA.slice(i, i + CONCURRENCY);
+                    const progressPercent = 10 + Math.floor((i / bucketA.length) * 60);
+                    updateProgress(`[A] Processing ${i + 1}-${Math.min(i + CONCURRENCY, bucketA.length)}/${bucketA.length}...`, progressPercent);
+                    await Promise.all(batch.map(({ pdf, candidates }) => {
+                        console.log(`[Scanner] [A] Downloading ${pdf.attachmentName}`);
+                        return processPdf(pdf, candidates, 'A', progressPercent);
+                    }));
                 }
 
                 console.log(`[Scanner] Bucket A complete. Matched ${foundCount} so far. ${unmatchedRequests.size} still unmatched.`);
 
-                // Process Bucket B: date-proximity (fallback for remaining unmatched)
+                // Rebuild Bucket B AFTER Bucket A (only unmatched requests remain)
+                const bucketB: PdfAttachmentInfo[] = [];
+                if (unmatchedRequests.size > 0) {
+                    for (const pdf of pdfList) {
+                        const key = `${pdf.messageId}:${pdf.attachmentId}`;
+                        if (bucketAIds.has(key)) continue;
+                        const dateMatches = findDateProximityMatches(pdf, unmatchedReqList());
+                        if (dateMatches.length > 0) bucketB.push(pdf);
+                    }
+
+                    // Sort by closest date proximity to any unmatched request
+                    const unmatchedDates = unmatchedReqList().map(r => new Date(r.date).getTime());
+                    bucketB.sort((a, b) => {
+                        const aMin = Math.min(...unmatchedDates.map(d => Math.abs(a.emailDate.getTime() - d)));
+                        const bMin = Math.min(...unmatchedDates.map(d => Math.abs(b.emailDate.getTime() - d)));
+                        return aMin - bMin;
+                    });
+
+                    // Cap to prevent runaway processing
+                    const BUCKET_B_CAP = 150;
+                    if (bucketB.length > BUCKET_B_CAP) {
+                        console.log(`[Scanner] Capping Bucket B: ${bucketB.length} → ${BUCKET_B_CAP}`);
+                        bucketB.length = BUCKET_B_CAP;
+                    }
+                }
+
+                // Process Bucket B: date-proximity (fallback) — parallel batches
                 if (unmatchedRequests.size > 0 && bucketB.length > 0) {
                     console.log(`[Scanner] Starting Bucket B: ${bucketB.length} date-proximity PDFs for ${unmatchedRequests.size} unmatched transactions`);
-                    for (let i = 0; i < bucketB.length; i++) {
+                    for (let i = 0; i < bucketB.length; i += CONCURRENCY) {
                         if (unmatchedRequests.size === 0) break;
-                        const pdf = bucketB[i];
-                        const candidates = findDateProximityMatches(pdf, unmatchedReqList());
-                        if (candidates.length === 0) continue;
-                        const progressPercent = 10 + Math.floor(((bucketA.length + i) / (bucketA.length + bucketB.length)) * 85);
-                        updateProgress(`[B] ${i + 1}/${bucketB.length}: ${pdf.attachmentName}...`, progressPercent);
-                        console.log(`[Scanner] [B] Downloading ${pdf.attachmentName} (${candidates.length} nearby transaction(s))`);
-                        await processPdf(pdf, candidates, 'B', progressPercent);
+                        const batch = bucketB.slice(i, i + CONCURRENCY);
+                        const progressPercent = 70 + Math.floor((i / bucketB.length) * 20);
+                        updateProgress(`[B] Processing ${i + 1}-${Math.min(i + CONCURRENCY, bucketB.length)}/${bucketB.length}...`, progressPercent);
+                        await Promise.all(batch.map(pdf => {
+                            const candidates = findDateProximityMatches(pdf, unmatchedReqList());
+                            if (candidates.length === 0) return Promise.resolve();
+                            return processPdf(pdf, candidates, 'B', progressPercent);
+                        }));
                     }
                 }
 
@@ -450,7 +489,7 @@ export const scanEmails = async (
                                 { subject: candidate.subject || '', sender: candidate.sender || '', filename: 'email-body' }
                             );
 
-                            if (result.matchId && result.confidence >= 50) {
+                            if (result.matchId && result.confidence >= 80) {
                                 const req = requests.find(r => r.id === result.matchId)!;
                                 if (!unmatchedRequests.has(result.matchId)) continue;
 
