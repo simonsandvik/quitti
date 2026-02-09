@@ -234,6 +234,91 @@ export async function getDownloadUrlServerAction(path: string, filename: string)
     return data.signedUrl;
 }
 
+export async function checkLLMAvailableAction(): Promise<boolean> {
+    return !!process.env.ANTHROPIC_API_KEY;
+}
+
+export async function verifyReceiptWithLLMAction(
+    pdfText: string,
+    candidates: { id: string; amount: number; date: string; merchant: string; currency: string }[]
+): Promise<{ matchId: string | null; confidence: number; reasoning: string }> {
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) {
+        return { matchId: null, confidence: 0, reasoning: "No ANTHROPIC_API_KEY configured" };
+    }
+
+    const text = pdfText.slice(0, 4000);
+
+    const candidateList = candidates.map((c, i) =>
+        `${i + 1}. Amount: ${c.amount} ${c.currency}, Date: ${c.date}, Merchant: "${c.merchant}"`
+    ).join('\n');
+
+    const prompt = `You are a receipt-matching assistant. Given text extracted from a PDF document, determine if it is a receipt or invoice for any of the listed credit card transactions.
+
+Consider:
+- Amounts may appear in different formats (123.45 or 123,45 or 1 234,56)
+- Dates can be in any format and may differ by up to 5 days from the transaction date
+- Merchant/company names on receipts often differ from credit card statement names (e.g. "Finnair OYJ" on receipt vs "FINNAIR, Helsinki" on statement, or "Stape Ltd" vs "STAPE OY")
+- The PDF might be a receipt, invoice, booking confirmation, e-ticket, or similar proof of purchase
+
+PDF Text:
+"""
+${text}
+"""
+
+Transactions to match against:
+${candidateList}
+
+Reply ONLY with JSON (no markdown, no code blocks):
+{"match": 1, "confidence": 85, "reasoning": "Brief explanation"}
+
+If no transaction matches, reply:
+{"match": null, "confidence": 0, "reasoning": "Brief explanation of what the PDF is"}`;
+
+    try {
+        const response = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-api-key': apiKey,
+                'anthropic-version': '2023-06-01'
+            },
+            body: JSON.stringify({
+                model: 'claude-haiku-4-5-20251001',
+                max_tokens: 200,
+                messages: [{ role: 'user', content: prompt }]
+            })
+        });
+
+        if (!response.ok) {
+            const errText = await response.text();
+            console.error(`[LLM] API error ${response.status}: ${errText}`);
+            return { matchId: null, confidence: 0, reasoning: `API error: ${response.status}` };
+        }
+
+        const data = await response.json();
+        const content = data.content?.[0]?.text || '';
+
+        // Parse JSON from response (handle potential markdown wrapping)
+        const jsonStr = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+        const result = JSON.parse(jsonStr);
+
+        if (result.match !== null && result.match >= 1 && result.match <= candidates.length) {
+            const matchedCandidate = candidates[result.match - 1];
+            return {
+                matchId: matchedCandidate.id,
+                confidence: result.confidence || 80,
+                reasoning: result.reasoning || 'LLM match'
+            };
+        }
+
+        return { matchId: null, confidence: 0, reasoning: result.reasoning || 'No match' };
+    } catch (e) {
+        console.error('[LLM] Verification failed:', e);
+        return { matchId: null, confidence: 0, reasoning: `Error: ${e}` };
+    }
+}
+
 export async function markAsTrulyMissingServerAction(requestId: string, reason: string) {
     const session = await getServerSession(authOptions);
     if (!session || !session.user) {

@@ -1,5 +1,20 @@
 import { ReceiptRequest } from "./parser";
 
+/** Quick amount pre-filter for LLM verification. Checks if text contains the amount in any common format. */
+export function textContainsAmount(text: string, amount: number): boolean {
+    const normText = text.toLowerCase().replace(/\s+/g, ' ');
+    const amountStr = amount.toFixed(2);
+    const amountEU = amountStr.replace('.', ',');
+    const amountInt = Math.floor(amount).toString();
+    const amountWithSpaces = amount >= 1000
+        ? amount.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ' ').replace('.', ',')
+        : null;
+
+    return normText.includes(amountStr) || normText.includes(amountEU) ||
+        (amountWithSpaces ? normText.includes(amountWithSpaces.toLowerCase()) : false) ||
+        (amount === Math.floor(amount) && normText.includes(amountInt));
+}
+
 export interface PdfContentMatch {
     isMatch: boolean;
     confidence: number;

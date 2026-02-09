@@ -34,7 +34,7 @@ const generateMockEmails = (requests: ReceiptRequest[]): EmailCandidate[] => {
 
 import { searchGmailForPdfs, getGmailAttachment } from "./integrations/gmail";
 import { searchOutlookForPdfs, getOutlookAttachment } from "./integrations/outlook";
-import { parsePdfContent, verifyPdfForRequest } from "./pdf-parser";
+import { parsePdfContent, verifyPdfForRequest, textContainsAmount } from "./pdf-parser";
 import { uploadReceiptFile } from "./supabase";
 
 export const scanEmails = async (
@@ -141,14 +141,31 @@ export const scanEmails = async (
                 // Track which requests are still unmatched
                 const unmatchedRequests = new Set(requests.map(r => r.id));
 
-                // Download and verify each PDF
-                for (let i = 0; i < pdfList.length && unmatchedRequests.size > 0; i++) {
+                // Check if LLM verification is available
+                let useLLM = false;
+                try {
+                    const { checkLLMAvailableAction } = await import("@/app/actions");
+                    useLLM = await checkLLMAvailableAction();
+                } catch (e) {
+                    console.log('[Scanner] LLM check failed, using rule-based matching');
+                }
+                console.log(`[Scanner] ${useLLM ? 'LLM verification enabled' : 'Rule-based matching (no API key)'}`);
+
+                // Phase 1: Download all PDFs, extract text, amount pre-filter
+                type PdfCandidate = {
+                    text: string;
+                    blob: Blob;
+                    pdf: typeof pdfList[0];
+                    candidateReqs: ReceiptRequest[];
+                };
+                const pdfCandidates: PdfCandidate[] = [];
+
+                for (let i = 0; i < pdfList.length; i++) {
                     const pdf = pdfList[i];
-                    const progressPercent = 10 + Math.floor((i / pdfList.length) * 80);
-                    updateProgress(`Checking PDF ${i + 1}/${pdfList.length}: ${pdf.attachmentName}...`, progressPercent);
+                    const progressPercent = 10 + Math.floor((i / pdfList.length) * (useLLM ? 60 : 80));
+                    updateProgress(`Downloading PDF ${i + 1}/${pdfList.length}: ${pdf.attachmentName}...`, progressPercent);
 
                     try {
-                        // Download the PDF
                         let blob: Blob | null = null;
                         if (provider === "google") {
                             blob = await getGmailAttachment(token, pdf.messageId, pdf.attachmentId);
@@ -161,62 +178,132 @@ export const scanEmails = async (
                             continue;
                         }
 
-                        // Extract text from PDF (with OCR fallback for scanned PDFs)
                         const arrayBuffer = await blob.arrayBuffer();
                         const text = await parsePdfContent(new Uint8Array(arrayBuffer), ocrWorker);
 
                         if (!text.trim()) {
-                            console.log(`[Scanner] No text in ${pdf.attachmentName} (skipping - text extraction and OCR both failed)`);
+                            console.log(`[Scanner] No text in ${pdf.attachmentName} (skipping)`);
                             continue;
                         }
 
-                        // Try to match against ALL unmatched requests, pick the best one (closest date)
-                        let bestMatch: { reqId: string; req: ReceiptRequest; details: string[]; dateOffset: number } | null = null;
+                        if (useLLM) {
+                            // LLM path: amount pre-filter to find candidate requests
+                            const candidateReqs = [...unmatchedRequests]
+                                .map(id => requests.find(r => r.id === id)!)
+                                .filter(req => textContainsAmount(text, req.amount));
 
-                        for (const reqId of unmatchedRequests) {
-                            const req = requests.find(r => r.id === reqId)!;
-                            const { isMatch, details, dateOffset } = verifyPdfForRequest(text, req);
-
-                            if (isMatch && (!bestMatch || dateOffset < bestMatch.dateOffset)) {
-                                bestMatch = { reqId, req, details, dateOffset };
+                            if (candidateReqs.length > 0) {
+                                pdfCandidates.push({ text, blob, pdf, candidateReqs });
+                                console.log(`[Scanner] Amount match in ${pdf.attachmentName} → ${candidateReqs.length} candidate(s)`);
                             }
+                        } else {
+                            // Rule-based fallback: use verifyPdfForRequest directly
+                            let bestMatch: { reqId: string; req: ReceiptRequest; details: string[]; dateOffset: number } | null = null;
+
+                            for (const reqId of unmatchedRequests) {
+                                const req = requests.find(r => r.id === reqId)!;
+                                const { isMatch, details, dateOffset } = verifyPdfForRequest(text, req);
+                                if (isMatch && (!bestMatch || dateOffset < bestMatch.dateOffset)) {
+                                    bestMatch = { reqId, req, details, dateOffset };
+                                }
+                            }
+
+                            if (bestMatch) {
+                                const { reqId, req, details } = bestMatch;
+                                console.log(`[Scanner] ✓ Matched ${req.merchant} (${req.amount}) to ${pdf.attachmentName}`);
+
+                                const file = new File([blob], pdf.attachmentName, { type: "application/pdf" });
+                                files[req.id] = file;
+                                foundCount++;
+                                pdfCount++;
+
+                                matches.push({
+                                    receiptId: req.id,
+                                    emailId: pdf.messageId,
+                                    status: "FOUND",
+                                    confidence: 100,
+                                    details: `PDF match: ${pdf.attachmentName} (${details.join(', ')})`
+                                });
+
+                                if (userId) {
+                                    try {
+                                        const storagePath = await uploadReceiptFile(userId, req.id, file);
+                                        console.log(`[Cloud Sync] Uploaded: ${storagePath}`);
+                                    } catch (e) {
+                                        console.error(`[Cloud Sync] Failed to upload ${pdf.attachmentName}`, e);
+                                    }
+                                }
+
+                                unmatchedRequests.delete(reqId);
+                                updateProgress(`Matched ${req.merchant}!`, progressPercent);
+                            }
+
+                            if (unmatchedRequests.size === 0) break;
                         }
+                    } catch (e) {
+                        console.error(`[Scanner] Error processing ${pdf.attachmentName}`, e);
+                    }
+                }
 
-                        if (bestMatch) {
-                            const { reqId, req, details } = bestMatch;
-                            console.log(`[Scanner] ✓ Matched ${req.merchant} (${req.amount}) to ${pdf.attachmentName}`);
-                            console.log(`[Scanner]   Details: ${details.join(', ')}`);
+                // Phase 2: LLM verification for candidates (only when useLLM is true)
+                if (useLLM && pdfCandidates.length > 0) {
+                    console.log(`[Scanner] Amount pre-filter: ${pdfCandidates.length}/${pdfList.length} candidates for LLM verification`);
+                    const { verifyReceiptWithLLMAction } = await import("@/app/actions");
 
-                            // Save the file
-                            const file = new File([blob], pdf.attachmentName, { type: "application/pdf" });
+                    // Process in batches of 5 for parallelism
+                    for (let batchStart = 0; batchStart < pdfCandidates.length && unmatchedRequests.size > 0; batchStart += 5) {
+                        const batch = pdfCandidates.slice(batchStart, batchStart + 5);
+                        const progressPercent = 70 + Math.floor((batchStart / pdfCandidates.length) * 25);
+                        updateProgress(`LLM verifying ${batchStart + 1}-${Math.min(batchStart + 5, pdfCandidates.length)}/${pdfCandidates.length}...`, progressPercent);
+
+                        const results = await Promise.all(batch.map(async (candidate) => {
+                            // Only send still-unmatched candidates
+                            const stillUnmatched = candidate.candidateReqs.filter(r => unmatchedRequests.has(r.id));
+                            if (stillUnmatched.length === 0) return null;
+
+                            const result = await verifyReceiptWithLLMAction(
+                                candidate.text,
+                                stillUnmatched.map(r => ({ id: r.id, amount: r.amount, date: r.date, merchant: r.merchant, currency: r.currency }))
+                            );
+                            return { candidate, result };
+                        }));
+
+                        for (const item of results) {
+                            if (!item || !item.result.matchId || item.result.confidence < 70) continue;
+
+                            const { candidate, result } = item;
+                            const matchId = result.matchId!;
+                            const req = requests.find(r => r.id === matchId)!;
+
+                            if (!unmatchedRequests.has(matchId)) continue; // Already matched by a parallel call
+
+                            console.log(`[Scanner] ✓ LLM matched ${req.merchant} (${req.amount}) to ${candidate.pdf.attachmentName} (${result.confidence}%: ${result.reasoning})`);
+
+                            const file = new File([candidate.blob], candidate.pdf.attachmentName, { type: "application/pdf" });
                             files[req.id] = file;
                             foundCount++;
                             pdfCount++;
 
-                            // Record the match
                             matches.push({
                                 receiptId: req.id,
-                                emailId: pdf.messageId,
+                                emailId: candidate.pdf.messageId,
                                 status: "FOUND",
-                                confidence: 100,
-                                details: `PDF match: ${pdf.attachmentName} (${details.join(', ')})`
+                                confidence: result.confidence,
+                                details: `LLM match: ${candidate.pdf.attachmentName} (${result.reasoning})`
                             });
 
-                            // Upload to cloud if userId provided
                             if (userId) {
                                 try {
                                     const storagePath = await uploadReceiptFile(userId, req.id, file);
                                     console.log(`[Cloud Sync] Uploaded: ${storagePath}`);
                                 } catch (e) {
-                                    console.error(`[Cloud Sync] Failed to upload ${pdf.attachmentName}`, e);
+                                    console.error(`[Cloud Sync] Failed to upload ${candidate.pdf.attachmentName}`, e);
                                 }
                             }
 
-                            unmatchedRequests.delete(reqId);
+                            unmatchedRequests.delete(matchId);
                             updateProgress(`Matched ${req.merchant}!`, progressPercent);
                         }
-                    } catch (e) {
-                        console.error(`[Scanner] Error processing ${pdf.attachmentName}`, e);
                     }
                 }
 
