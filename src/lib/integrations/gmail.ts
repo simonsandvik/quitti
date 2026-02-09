@@ -235,6 +235,8 @@ export interface PdfAttachmentInfo {
     attachmentId: string;
     attachmentName: string;
     emailDate: Date;
+    emailSubject: string;
+    emailSender: string;
 }
 
 export const searchGmailForPdfs = async (
@@ -282,7 +284,7 @@ export const searchGmailForPdfs = async (
             for (const msg of messages) {
                 try {
                     const detailRes = await fetchWithTimeout(
-                        `${GMAIL_API_BASE}/messages/${msg.id}?format=metadata&metadataHeaders=Date`,
+                        `${GMAIL_API_BASE}/messages/${msg.id}?format=metadata&metadataHeaders=Date&metadataHeaders=Subject&metadataHeaders=From`,
                         { headers: { Authorization: `Bearer ${accessToken}` } }
                     );
 
@@ -291,6 +293,8 @@ export const searchGmailForPdfs = async (
                     const detail = await detailRes.json();
                     const dateHeader = detail.payload?.headers?.find((h: any) => h.name === "Date")?.value;
                     const emailDate = dateHeader ? new Date(dateHeader) : new Date(parseInt(detail.internalDate));
+                    const emailSubject = detail.payload?.headers?.find((h: any) => h.name === "Subject")?.value || '';
+                    const emailSender = detail.payload?.headers?.find((h: any) => h.name === "From")?.value || '';
 
                     // Fetch attachment list
                     const attRes = await fetchWithTimeout(
@@ -309,7 +313,9 @@ export const searchGmailForPdfs = async (
                                 messageId: msg.id,
                                 attachmentId: att.id,
                                 attachmentName: att.name,
-                                emailDate
+                                emailDate,
+                                emailSubject,
+                                emailSender
                             });
                         }
                     }

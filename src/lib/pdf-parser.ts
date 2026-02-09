@@ -1,18 +1,31 @@
 import { ReceiptRequest } from "./parser";
 
-/** Quick amount pre-filter for LLM verification. Checks if text contains the amount in any common format. */
+/** Quick amount pre-filter for LLM verification. Checks if text contains the amount in any common format.
+ *  Uses non-digit boundaries to prevent "25.00" matching inside "125.00". */
 export function textContainsAmount(text: string, amount: number): boolean {
     const normText = text.toLowerCase().replace(/\s+/g, ' ');
-    const amountStr = amount.toFixed(2);
-    const amountEU = amountStr.replace('.', ',');
-    const amountInt = Math.floor(amount).toString();
-    const amountWithSpaces = amount >= 1000
-        ? amount.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ' ').replace('.', ',')
-        : null;
+    const amountStr = amount.toFixed(2); // "25.00"
+    const amountEU = amountStr.replace('.', ','); // "25,00"
 
-    return normText.includes(amountStr) || normText.includes(amountEU) ||
-        (amountWithSpaces ? normText.includes(amountWithSpaces.toLowerCase()) : false) ||
-        (amount === Math.floor(amount) && normText.includes(amountInt));
+    // Escape dots for regex, use non-digit lookbehind/lookahead
+    const escDot = amountStr.replace('.', '\\.');
+    if (new RegExp(`(?<!\\d)${escDot}(?!\\d)`).test(normText)) return true;
+    if (new RegExp(`(?<!\\d)${amountEU}(?!\\d)`).test(normText)) return true;
+
+    // Thousands separator: "1 234,56"
+    if (amount >= 1000) {
+        const withSpaces = amount.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ' ').replace('.', ',');
+        const escSpaces = withSpaces.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        if (new RegExp(`(?<!\\d)${escSpaces}(?!\\d)`).test(normText)) return true;
+    }
+
+    // Integer match for round numbers: "25" but not "25.50" or "125"
+    if (amount === Math.floor(amount)) {
+        const amountInt = Math.floor(amount).toString();
+        if (new RegExp(`(?<!\\d)${amountInt}(?![.,\\d])`).test(normText)) return true;
+    }
+
+    return false;
 }
 
 export interface PdfContentMatch {

@@ -240,18 +240,26 @@ export async function checkLLMAvailableAction(): Promise<boolean> {
 
 export async function verifyReceiptWithLLMAction(
     pdfText: string,
-    candidates: { id: string; amount: number; date: string; merchant: string; currency: string }[]
+    candidates: { id: string; amount: number; date: string; merchant: string; currency: string }[],
+    emailMeta?: { subject: string; sender: string; filename: string }
 ): Promise<{ matchId: string | null; confidence: number; reasoning: string }> {
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) {
         return { matchId: null, confidence: 0, reasoning: "No ANTHROPIC_API_KEY configured" };
     }
 
-    const text = pdfText.slice(0, 4000);
+    const text = pdfText.slice(0, 6000);
 
     const candidateList = candidates.map((c, i) =>
         `${i + 1}. Amount: ${c.amount} ${c.currency}, Date: ${c.date}, Merchant: "${c.merchant}"`
     ).join('\n');
+
+    const emailMetaSection = emailMeta
+        ? `\nEmail metadata (the email this PDF was attached to):
+- Subject: "${emailMeta.subject}"
+- Sender: ${emailMeta.sender}
+- Filename: ${emailMeta.filename}\n`
+        : '';
 
     const prompt = `You are a receipt-matching assistant. Given text extracted from a PDF document, determine if it is a receipt or invoice for any of the listed credit card transactions.
 
@@ -260,6 +268,9 @@ Consider:
 - Dates can be in any format and may differ by up to 5 days from the transaction date
 - Merchant/company names on receipts often differ from credit card statement names (e.g. "Finnair OYJ" on receipt vs "FINNAIR, Helsinki" on statement, or "Stape Ltd" vs "STAPE OY")
 - The PDF might be a receipt, invoice, booking confirmation, e-ticket, or similar proof of purchase
+- The email metadata (subject, sender) can help identify the merchant
+${emailMetaSection}
+IMPORTANT: If this PDF is clearly NOT a receipt, invoice, or proof of purchase (e.g., it's a report, contract, newsletter, presentation, or marketing material), reply with match: null regardless of any amount matches.
 
 PDF Text:
 """
@@ -285,7 +296,7 @@ If no transaction matches, reply:
             },
             body: JSON.stringify({
                 model: 'claude-haiku-4-5-20251001',
-                max_tokens: 200,
+                max_tokens: 300,
                 messages: [{ role: 'user', content: prompt }]
             })
         });

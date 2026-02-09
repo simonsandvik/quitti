@@ -34,7 +34,8 @@ const generateMockEmails = (requests: ReceiptRequest[]): EmailCandidate[] => {
 
 import { searchGmailForPdfs, getGmailAttachment } from "./integrations/gmail";
 import { searchOutlookForPdfs, getOutlookAttachment } from "./integrations/outlook";
-import { parsePdfContent, verifyPdfForRequest, textContainsAmount } from "./pdf-parser";
+import { parsePdfContent, verifyPdfForRequest } from "./pdf-parser";
+import type { PdfAttachmentInfo } from "./integrations/outlook";
 import { uploadReceiptFile } from "./supabase";
 
 export const scanEmails = async (
@@ -103,7 +104,7 @@ export const scanEmails = async (
             // Search for all PDFs in the date range
             updateProgress(`Searching for PDF attachments...`, 0);
 
-            let pdfList: { messageId: string; attachmentId: string; attachmentName: string; emailDate: Date }[] = [];
+            let pdfList: PdfAttachmentInfo[] = [];
             let ocrWorker: any = null;
 
             try {
@@ -151,20 +152,55 @@ export const scanEmails = async (
                 }
                 console.log(`[Scanner] ${useLLM ? 'LLM verification enabled' : 'Rule-based matching (no API key)'}`);
 
-                // Phase 1: Download all PDFs, extract text, amount pre-filter
-                type PdfCandidate = {
-                    text: string;
-                    blob: Blob;
-                    pdf: typeof pdfList[0];
-                    candidateReqs: ReceiptRequest[];
+                // ==========================================
+                // Merchant-First + Date-Proximity Matching
+                // ==========================================
+                // Stop words for merchant tokenization
+                const MERCHANT_STOP_WORDS = new Set([
+                    "oy", "ab", "ltd", "inc", "corp", "gmbh", "co", "llc", "sa", "ag", "oyj",
+                    "com", "www", "net", "org", "fi", "se", "no", "dk", "de", "uk", "eu",
+                    "the", "and", "for", "pay", "payment", "invoice", "receipt", "total",
+                    "helsinki", "stockholm", "copenhagen", "oslo",
+                    "eur", "usd", "gbp", "sek", "nok", "dkk"
+                ]);
+
+                const getMerchantTokens = (merchant: string): string[] => {
+                    return merchant.toLowerCase()
+                        .split(/[^a-z0-9]+/g)
+                        .filter(t => t.length >= 3 && !MERCHANT_STOP_WORDS.has(t));
                 };
-                const pdfCandidates: PdfCandidate[] = [];
 
-                for (let i = 0; i < pdfList.length; i++) {
-                    const pdf = pdfList[i];
-                    const progressPercent = 10 + Math.floor((i / pdfList.length) * (useLLM ? 60 : 80));
-                    updateProgress(`Downloading PDF ${i + 1}/${pdfList.length}: ${pdf.attachmentName}...`, progressPercent);
+                const findMerchantMatches = (pdf: PdfAttachmentInfo, unmatchedReqs: ReceiptRequest[]): ReceiptRequest[] => {
+                    const subject = (pdf.emailSubject || '').toLowerCase();
+                    const sender = (pdf.emailSender || '').toLowerCase();
+                    const filename = (pdf.attachmentName || '').toLowerCase();
 
+                    return unmatchedReqs.filter(req => {
+                        const tokens = getMerchantTokens(req.merchant);
+                        return tokens.some(token => {
+                            if (token.length < 4) {
+                                const regex = new RegExp(`\\b${token}\\b`, 'i');
+                                return regex.test(subject) || regex.test(sender) || regex.test(filename);
+                            }
+                            return subject.includes(token) || sender.includes(token) || filename.includes(token);
+                        });
+                    });
+                };
+
+                const findDateProximityMatches = (pdf: PdfAttachmentInfo, unmatchedReqs: ReceiptRequest[], maxDays: number = 5): ReceiptRequest[] => {
+                    return unmatchedReqs.filter(req => {
+                        const diff = Math.abs(pdf.emailDate.getTime() - new Date(req.date).getTime());
+                        return diff <= maxDays * 24 * 60 * 60 * 1000;
+                    });
+                };
+
+                // Helper to process a single PDF: download, extract, LLM verify
+                const processPdf = async (
+                    pdf: PdfAttachmentInfo,
+                    candidateReqs: ReceiptRequest[],
+                    bucket: string,
+                    progressPercent: number
+                ): Promise<void> => {
                     try {
                         let blob: Blob | null = null;
                         if (provider === "google") {
@@ -175,7 +211,7 @@ export const scanEmails = async (
 
                         if (!blob) {
                             console.log(`[Scanner] Failed to download ${pdf.attachmentName}`);
-                            continue;
+                            return;
                         }
 
                         const arrayBuffer = await blob.arrayBuffer();
@@ -183,34 +219,69 @@ export const scanEmails = async (
 
                         if (!text.trim()) {
                             console.log(`[Scanner] No text in ${pdf.attachmentName} (skipping)`);
-                            continue;
+                            return;
                         }
 
                         if (useLLM) {
-                            // LLM path: amount pre-filter to find candidate requests
-                            const candidateReqs = [...unmatchedRequests]
-                                .map(id => requests.find(r => r.id === id)!)
-                                .filter(req => textContainsAmount(text, req.amount));
+                            // Filter to still-unmatched candidates
+                            const stillUnmatched = candidateReqs.filter(r => unmatchedRequests.has(r.id));
+                            if (stillUnmatched.length === 0) return;
 
-                            if (candidateReqs.length > 0) {
-                                pdfCandidates.push({ text, blob, pdf, candidateReqs });
-                                console.log(`[Scanner] Amount match in ${pdf.attachmentName} → ${candidateReqs.length} candidate(s)`);
+                            const { verifyReceiptWithLLMAction } = await import("@/app/actions");
+                            const result = await verifyReceiptWithLLMAction(
+                                text,
+                                stillUnmatched.map(r => ({ id: r.id, amount: r.amount, date: r.date, merchant: r.merchant, currency: r.currency })),
+                                { subject: pdf.emailSubject || '', sender: pdf.emailSender || '', filename: pdf.attachmentName }
+                            );
+
+                            if (result.matchId && result.confidence >= 50) {
+                                const req = requests.find(r => r.id === result.matchId)!;
+                                if (!unmatchedRequests.has(result.matchId)) return;
+
+                                console.log(`[Scanner] ✓ [${bucket}] LLM matched ${req.merchant} (${req.amount}) to ${pdf.attachmentName} (${result.confidence}%: ${result.reasoning})`);
+
+                                const file = new File([blob], pdf.attachmentName, { type: "application/pdf" });
+                                files[req.id] = file;
+                                foundCount++;
+                                pdfCount++;
+
+                                matches.push({
+                                    receiptId: req.id,
+                                    emailId: pdf.messageId,
+                                    status: "FOUND",
+                                    confidence: result.confidence,
+                                    details: `LLM match [${bucket}]: ${pdf.attachmentName} (${result.reasoning})`
+                                });
+
+                                if (userId) {
+                                    try {
+                                        const storagePath = await uploadReceiptFile(userId, req.id, file);
+                                        console.log(`[Cloud Sync] Uploaded: ${storagePath}`);
+                                    } catch (e) {
+                                        console.error(`[Cloud Sync] Failed to upload ${pdf.attachmentName}`, e);
+                                    }
+                                }
+
+                                unmatchedRequests.delete(result.matchId);
+                                updateProgress(`Matched ${req.merchant}!`, progressPercent);
+                            } else {
+                                console.log(`[Scanner] ✗ [${bucket}] LLM rejected ${pdf.attachmentName}: "${result.reasoning}"`);
                             }
                         } else {
-                            // Rule-based fallback: use verifyPdfForRequest directly
+                            // Rule-based fallback (no API key)
                             let bestMatch: { reqId: string; req: ReceiptRequest; details: string[]; dateOffset: number } | null = null;
 
-                            for (const reqId of unmatchedRequests) {
-                                const req = requests.find(r => r.id === reqId)!;
+                            for (const req of candidateReqs) {
+                                if (!unmatchedRequests.has(req.id)) continue;
                                 const { isMatch, details, dateOffset } = verifyPdfForRequest(text, req);
                                 if (isMatch && (!bestMatch || dateOffset < bestMatch.dateOffset)) {
-                                    bestMatch = { reqId, req, details, dateOffset };
+                                    bestMatch = { reqId: req.id, req, details, dateOffset };
                                 }
                             }
 
                             if (bestMatch) {
                                 const { reqId, req, details } = bestMatch;
-                                console.log(`[Scanner] ✓ Matched ${req.merchant} (${req.amount}) to ${pdf.attachmentName}`);
+                                console.log(`[Scanner] ✓ [${bucket}] Rule-matched ${req.merchant} (${req.amount}) to ${pdf.attachmentName}`);
 
                                 const file = new File([blob], pdf.attachmentName, { type: "application/pdf" });
                                 files[req.id] = file;
@@ -222,7 +293,7 @@ export const scanEmails = async (
                                     emailId: pdf.messageId,
                                     status: "FOUND",
                                     confidence: 100,
-                                    details: `PDF match: ${pdf.attachmentName} (${details.join(', ')})`
+                                    details: `Rule match [${bucket}]: ${pdf.attachmentName} (${details.join(', ')})`
                                 });
 
                                 if (userId) {
@@ -237,73 +308,64 @@ export const scanEmails = async (
                                 unmatchedRequests.delete(reqId);
                                 updateProgress(`Matched ${req.merchant}!`, progressPercent);
                             }
-
-                            if (unmatchedRequests.size === 0) break;
                         }
                     } catch (e) {
                         console.error(`[Scanner] Error processing ${pdf.attachmentName}`, e);
                     }
+                };
+
+                // Classify PDFs into buckets (before downloading anything)
+                const unmatchedReqList = () => [...unmatchedRequests].map(id => requests.find(r => r.id === id)!);
+
+                const bucketA: { pdf: PdfAttachmentInfo; candidates: ReceiptRequest[] }[] = [];
+                const bucketB: PdfAttachmentInfo[] = [];
+                const bucketAIds = new Set<string>();
+
+                for (const pdf of pdfList) {
+                    const merchantMatches = findMerchantMatches(pdf, unmatchedReqList());
+                    if (merchantMatches.length > 0) {
+                        bucketA.push({ pdf, candidates: merchantMatches });
+                        bucketAIds.add(`${pdf.messageId}:${pdf.attachmentId}`);
+                    }
                 }
 
-                // Phase 2: LLM verification for candidates (only when useLLM is true)
-                if (useLLM && pdfCandidates.length > 0) {
-                    console.log(`[Scanner] Amount pre-filter: ${pdfCandidates.length}/${pdfList.length} candidates for LLM verification`);
-                    const { verifyReceiptWithLLMAction } = await import("@/app/actions");
+                for (const pdf of pdfList) {
+                    const key = `${pdf.messageId}:${pdf.attachmentId}`;
+                    if (bucketAIds.has(key)) continue;
+                    const dateMatches = findDateProximityMatches(pdf, unmatchedReqList());
+                    if (dateMatches.length > 0) {
+                        bucketB.push(pdf);
+                    }
+                }
 
-                    // Process in batches of 5 for parallelism
-                    for (let batchStart = 0; batchStart < pdfCandidates.length && unmatchedRequests.size > 0; batchStart += 5) {
-                        const batch = pdfCandidates.slice(batchStart, batchStart + 5);
-                        const progressPercent = 70 + Math.floor((batchStart / pdfCandidates.length) * 25);
-                        updateProgress(`LLM verifying ${batchStart + 1}-${Math.min(batchStart + 5, pdfCandidates.length)}/${pdfCandidates.length}...`, progressPercent);
+                const skippedCount = pdfList.length - bucketA.length - bucketB.length;
+                console.log(`[Scanner] Bucket A: ${bucketA.length} merchant-matched PDFs, Bucket B: ${bucketB.length} date-proximity, Skipped: ${skippedCount}`);
 
-                        const results = await Promise.all(batch.map(async (candidate) => {
-                            // Only send still-unmatched candidates
-                            const stillUnmatched = candidate.candidateReqs.filter(r => unmatchedRequests.has(r.id));
-                            if (stillUnmatched.length === 0) return null;
+                // Process Bucket A: merchant-matched (high priority)
+                for (let i = 0; i < bucketA.length; i++) {
+                    if (unmatchedRequests.size === 0) break;
+                    const { pdf, candidates } = bucketA[i];
+                    const progressPercent = 10 + Math.floor((i / (bucketA.length + bucketB.length)) * 85);
+                    const merchantNames = [...new Set(candidates.map(c => c.merchant))].slice(0, 3).join(', ');
+                    updateProgress(`[A] ${i + 1}/${bucketA.length}: ${pdf.attachmentName} (${merchantNames})...`, progressPercent);
+                    console.log(`[Scanner] [A] Downloading ${pdf.attachmentName} (matches: ${merchantNames})`);
+                    await processPdf(pdf, candidates, 'A', progressPercent);
+                }
 
-                            const result = await verifyReceiptWithLLMAction(
-                                candidate.text,
-                                stillUnmatched.map(r => ({ id: r.id, amount: r.amount, date: r.date, merchant: r.merchant, currency: r.currency }))
-                            );
-                            return { candidate, result };
-                        }));
+                console.log(`[Scanner] Bucket A complete. Matched ${foundCount} so far. ${unmatchedRequests.size} still unmatched.`);
 
-                        for (const item of results) {
-                            if (!item || !item.result.matchId || item.result.confidence < 70) continue;
-
-                            const { candidate, result } = item;
-                            const matchId = result.matchId!;
-                            const req = requests.find(r => r.id === matchId)!;
-
-                            if (!unmatchedRequests.has(matchId)) continue; // Already matched by a parallel call
-
-                            console.log(`[Scanner] ✓ LLM matched ${req.merchant} (${req.amount}) to ${candidate.pdf.attachmentName} (${result.confidence}%: ${result.reasoning})`);
-
-                            const file = new File([candidate.blob], candidate.pdf.attachmentName, { type: "application/pdf" });
-                            files[req.id] = file;
-                            foundCount++;
-                            pdfCount++;
-
-                            matches.push({
-                                receiptId: req.id,
-                                emailId: candidate.pdf.messageId,
-                                status: "FOUND",
-                                confidence: result.confidence,
-                                details: `LLM match: ${candidate.pdf.attachmentName} (${result.reasoning})`
-                            });
-
-                            if (userId) {
-                                try {
-                                    const storagePath = await uploadReceiptFile(userId, req.id, file);
-                                    console.log(`[Cloud Sync] Uploaded: ${storagePath}`);
-                                } catch (e) {
-                                    console.error(`[Cloud Sync] Failed to upload ${candidate.pdf.attachmentName}`, e);
-                                }
-                            }
-
-                            unmatchedRequests.delete(matchId);
-                            updateProgress(`Matched ${req.merchant}!`, progressPercent);
-                        }
+                // Process Bucket B: date-proximity (fallback for remaining unmatched)
+                if (unmatchedRequests.size > 0 && bucketB.length > 0) {
+                    console.log(`[Scanner] Starting Bucket B: ${bucketB.length} date-proximity PDFs for ${unmatchedRequests.size} unmatched transactions`);
+                    for (let i = 0; i < bucketB.length; i++) {
+                        if (unmatchedRequests.size === 0) break;
+                        const pdf = bucketB[i];
+                        const candidates = findDateProximityMatches(pdf, unmatchedReqList());
+                        if (candidates.length === 0) continue;
+                        const progressPercent = 10 + Math.floor(((bucketA.length + i) / (bucketA.length + bucketB.length)) * 85);
+                        updateProgress(`[B] ${i + 1}/${bucketB.length}: ${pdf.attachmentName}...`, progressPercent);
+                        console.log(`[Scanner] [B] Downloading ${pdf.attachmentName} (${candidates.length} nearby transaction(s))`);
+                        await processPdf(pdf, candidates, 'B', progressPercent);
                     }
                 }
 

@@ -217,6 +217,8 @@ export interface PdfAttachmentInfo {
     attachmentId: string;
     attachmentName: string;
     emailDate: Date;
+    emailSubject: string;
+    emailSender: string;
 }
 
 export const searchOutlookForPdfs = async (
@@ -234,7 +236,7 @@ export const searchOutlookForPdfs = async (
     onProgress?.(`Searching Outlook for PDFs...`);
 
     try {
-        let nextLink: string | undefined = `${GRAPH_API_BASE}/messages?$filter=${encodeURIComponent(filter)}&$top=100&$select=id,receivedDateTime,hasAttachments`;
+        let nextLink: string | undefined = `${GRAPH_API_BASE}/messages?$filter=${encodeURIComponent(filter)}&$top=100&$select=id,receivedDateTime,hasAttachments,subject,from`;
 
         let totalMessages = 0;
 
@@ -285,7 +287,9 @@ export const searchOutlookForPdfs = async (
                                 messageId: msg.id,
                                 attachmentId: att.id,
                                 attachmentName: att.name,
-                                emailDate: new Date(msg.receivedDateTime)
+                                emailDate: new Date(msg.receivedDateTime),
+                                emailSubject: msg.subject || '',
+                                emailSender: msg.from?.emailAddress?.address || ''
                             });
                         }
                     }
