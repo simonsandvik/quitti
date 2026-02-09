@@ -330,6 +330,86 @@ If no transaction matches, reply:
     }
 }
 
+export async function verifyMatchGroupAction(
+    matchGroup: {
+        receiptId: string;
+        merchant: string;
+        amount: number;
+        date: string;
+        currency: string;
+        pdfText: string;
+        emailSubject?: string;
+    }[]
+): Promise<{
+    verified: boolean;
+    reassignments: { receiptId: string; shouldMatchTo: string }[];
+    reasoning: string;
+}> {
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) {
+        return { verified: true, reassignments: [], reasoning: "No API key, skipping verification" };
+    }
+
+    // Build the verification prompt
+    const items = matchGroup.map((m, i) =>
+        `${i + 1}. Transaction "${m.receiptId}": ${m.amount} ${m.currency}, Date: ${m.date}\n   Receipt text (first 1500 chars): "${m.pdfText.slice(0, 1500)}"\n   Email subject: "${m.emailSubject || 'N/A'}"`
+    ).join('\n\n');
+
+    const prompt = `You are verifying that receipts are correctly paired with their transactions.
+All ${matchGroup.length} items below are from the same merchant "${matchGroup[0].merchant}".
+Each has a transaction (amount + date) and the matched receipt text.
+
+Verify that each receipt is paired with the CORRECT transaction based on:
+- The amount in the receipt text should match the transaction amount
+- The date in the receipt text should be close to the transaction date
+- Invoice numbers, order IDs, etc. should be consistent
+
+Items:
+${items}
+
+Reply ONLY with JSON (no markdown, no code blocks):
+If all pairings are correct:
+{"verified": true, "reassignments": [], "reasoning": "Brief explanation"}
+
+If any are swapped (receipt A matched to transaction B when it should be transaction C):
+{"verified": false, "reassignments": [{"receiptId": "current_receipt_id", "shouldMatchTo": "correct_receipt_id"}], "reasoning": "Brief explanation of what's wrong"}`;
+
+    try {
+        const response = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-api-key': apiKey,
+                'anthropic-version': '2023-06-01'
+            },
+            body: JSON.stringify({
+                model: 'claude-haiku-4-5-20251001',
+                max_tokens: 500,
+                messages: [{ role: 'user', content: prompt }]
+            })
+        });
+
+        if (!response.ok) {
+            console.error(`[LLM Verify] API error ${response.status}`);
+            return { verified: true, reassignments: [], reasoning: `API error: ${response.status}` };
+        }
+
+        const data = await response.json();
+        const content = data.content?.[0]?.text || '';
+        const jsonStr = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+        const result = JSON.parse(jsonStr);
+
+        return {
+            verified: result.verified ?? true,
+            reassignments: result.reassignments || [],
+            reasoning: result.reasoning || 'Verified'
+        };
+    } catch (e) {
+        console.error('[LLM Verify] Verification failed:', e);
+        return { verified: true, reassignments: [], reasoning: `Error: ${e}` };
+    }
+}
+
 export async function markAsTrulyMissingServerAction(requestId: string, reason: string) {
     const session = await getServerSession(authOptions);
     if (!session || !session.user) {

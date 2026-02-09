@@ -32,8 +32,8 @@ const generateMockEmails = (requests: ReceiptRequest[]): EmailCandidate[] => {
     });
 };
 
-import { searchGmailForPdfs, getGmailAttachment } from "./integrations/gmail";
-import { searchOutlookForPdfs, getOutlookAttachment } from "./integrations/outlook";
+import { searchGmail, searchGmailForPdfs, getGmailAttachment } from "./integrations/gmail";
+import { searchOutlook, searchOutlookForPdfs, getOutlookAttachment } from "./integrations/outlook";
 import { parsePdfContent, verifyPdfForRequest } from "./pdf-parser";
 import type { PdfAttachmentInfo } from "./integrations/outlook";
 import { uploadReceiptFile } from "./supabase";
@@ -48,6 +48,7 @@ export const scanEmails = async (
 
     let allCandidates: EmailCandidate[] = [];
     const files: Record<string, File> = {};
+    const extractedTexts: Record<string, string> = {};
     const matches: MatchResult[] = [];
     const foundIds = new Set<string>();
     let foundCount = 0;
@@ -167,7 +168,7 @@ export const scanEmails = async (
                 const getMerchantTokens = (merchant: string): string[] => {
                     return merchant.toLowerCase()
                         .split(/[^a-z0-9]+/g)
-                        .filter(t => t.length >= 3 && !MERCHANT_STOP_WORDS.has(t));
+                        .filter(t => t.length >= 2 && !MERCHANT_STOP_WORDS.has(t));
                 };
 
                 const findMerchantMatches = (pdf: PdfAttachmentInfo, unmatchedReqs: ReceiptRequest[]): ReceiptRequest[] => {
@@ -187,7 +188,7 @@ export const scanEmails = async (
                     });
                 };
 
-                const findDateProximityMatches = (pdf: PdfAttachmentInfo, unmatchedReqs: ReceiptRequest[], maxDays: number = 5): ReceiptRequest[] => {
+                const findDateProximityMatches = (pdf: PdfAttachmentInfo, unmatchedReqs: ReceiptRequest[], maxDays: number = 3): ReceiptRequest[] => {
                     return unmatchedReqs.filter(req => {
                         const diff = Math.abs(pdf.emailDate.getTime() - new Date(req.date).getTime());
                         return diff <= maxDays * 24 * 60 * 60 * 1000;
@@ -242,6 +243,7 @@ export const scanEmails = async (
 
                                 const file = new File([blob], pdf.attachmentName, { type: "application/pdf" });
                                 files[req.id] = file;
+                                extractedTexts[req.id] = text.slice(0, 3000);
                                 foundCount++;
                                 pdfCount++;
 
@@ -285,6 +287,7 @@ export const scanEmails = async (
 
                                 const file = new File([blob], pdf.attachmentName, { type: "application/pdf" });
                                 files[req.id] = file;
+                                extractedTexts[req.id] = text.slice(0, 3000);
                                 foundCount++;
                                 pdfCount++;
 
@@ -379,6 +382,121 @@ export const scanEmails = async (
                     } catch (e) {
                         // Ignore termination errors
                     }
+                }
+
+                // ==========================================
+                // Bucket C: HTML Email Scan
+                // ==========================================
+                // For still-unmatched transactions, search email bodies
+                // for receipt keywords (kvitto, kuitti, invoice, etc.)
+                if (unmatchedRequests.size > 0 && useLLM) {
+                    const unmatchedForHtml = unmatchedReqList();
+                    console.log(`[Scanner] Starting HTML scan for ${unmatchedForHtml.length} unmatched transactions`);
+                    updateProgress(`Scanning email bodies for receipts...`, 92);
+
+                    try {
+                        // Use existing email search (already has keyword filtering)
+                        const htmlCandidates = provider === "google"
+                            ? await searchGmail(token, unmatchedForHtml, (msg) => updateProgress(msg, 93))
+                            : await searchOutlook(token, unmatchedForHtml, (msg) => updateProgress(msg, 93));
+
+                        console.log(`[Scanner] HTML scan found ${htmlCandidates.length} email candidates`);
+
+                        for (const candidate of htmlCandidates) {
+                            if (!candidate.bodyHtml) continue;
+                            if (unmatchedRequests.size === 0) break;
+
+                            // Skip emails with PDF attachments (already handled in Bucket A/B)
+                            const hasPdf = candidate.attachments?.some(a =>
+                                a.type?.toLowerCase().includes('pdf') || a.name?.toLowerCase().endsWith('.pdf')
+                            );
+                            if (hasPdf) continue;
+
+                            // Strip HTML → plain text for LLM
+                            const textContent = candidate.bodyHtml
+                                .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+                                .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+                                .replace(/<[^>]+>/g, ' ')
+                                .replace(/&nbsp;/g, ' ')
+                                .replace(/&amp;/g, '&')
+                                .replace(/&lt;/g, '<')
+                                .replace(/&gt;/g, '>')
+                                .replace(/\s+/g, ' ')
+                                .trim();
+
+                            if (textContent.length < 50) continue;
+
+                            // Find which unmatched transactions this email might match
+                            const emailAsPdfInfo: PdfAttachmentInfo = {
+                                messageId: candidate.id,
+                                attachmentId: '',
+                                attachmentName: candidate.subject || 'email',
+                                emailDate: candidate.date,
+                                emailSubject: candidate.subject,
+                                emailSender: candidate.sender
+                            };
+
+                            let candidateReqs = findMerchantMatches(emailAsPdfInfo, unmatchedReqList());
+                            if (candidateReqs.length === 0) {
+                                candidateReqs = findDateProximityMatches(emailAsPdfInfo, unmatchedReqList());
+                            }
+                            if (candidateReqs.length === 0) continue;
+
+                            // LLM verify the email body text
+                            const { verifyReceiptWithLLMAction } = await import("@/app/actions");
+                            const result = await verifyReceiptWithLLMAction(
+                                textContent,
+                                candidateReqs.map(r => ({ id: r.id, amount: r.amount, date: r.date, merchant: r.merchant, currency: r.currency })),
+                                { subject: candidate.subject || '', sender: candidate.sender || '', filename: 'email-body' }
+                            );
+
+                            if (result.matchId && result.confidence >= 50) {
+                                const req = requests.find(r => r.id === result.matchId)!;
+                                if (!unmatchedRequests.has(result.matchId)) continue;
+
+                                console.log(`[Scanner] ✓ [C-HTML] LLM matched ${req.merchant} to email "${candidate.subject}" (${result.confidence}%: ${result.reasoning})`);
+
+                                // Convert HTML email to PDF
+                                try {
+                                    const { htmlToPdfBlob } = await import("@/lib/pdf");
+                                    const pdfBlob = await htmlToPdfBlob(candidate.bodyHtml);
+                                    const safeFilename = `${req.merchant.replace(/[^a-zA-Z0-9]/g, '_')}_email_receipt.pdf`;
+                                    const pdfFile = new File([pdfBlob], safeFilename, { type: "application/pdf" });
+
+                                    files[req.id] = pdfFile;
+                                    extractedTexts[req.id] = textContent.slice(0, 3000);
+                                    foundCount++;
+                                    pdfCount++;
+
+                                    matches.push({
+                                        receiptId: req.id,
+                                        emailId: candidate.id,
+                                        status: "FOUND",
+                                        confidence: result.confidence,
+                                        details: `HTML email → PDF: "${candidate.subject}" (${result.reasoning})`
+                                    });
+
+                                    if (userId) {
+                                        try {
+                                            const storagePath = await uploadReceiptFile(userId, req.id, pdfFile);
+                                            console.log(`[Cloud Sync] Uploaded HTML→PDF: ${storagePath}`);
+                                        } catch (e) {
+                                            console.error(`[Cloud Sync] Failed to upload HTML→PDF`, e);
+                                        }
+                                    }
+
+                                    unmatchedRequests.delete(result.matchId);
+                                    updateProgress(`Matched ${req.merchant} (email)!`, 94);
+                                } catch (pdfErr) {
+                                    console.error(`[Scanner] HTML→PDF conversion failed for "${candidate.subject}"`, pdfErr);
+                                }
+                            }
+                        }
+                    } catch (htmlErr) {
+                        console.error(`[Scanner] HTML scan failed`, htmlErr);
+                    }
+
+                    console.log(`[Scanner] HTML scan complete. Total matched: ${foundCount}/${requests.length}`);
                 }
 
             } catch (e) {
@@ -822,6 +940,96 @@ export const scanEmails = async (
     const candidates = Array.from(new Map(allCandidates.map(c => [c.id, c])).values());
 
     updateProgress(`Analyzing ${candidates.length} emails found...`);
+
+    // ==========================================
+    // Final LLM Verification Pass
+    // ==========================================
+    // Group matches by merchant and verify correct pairing
+    // Only for merchants with 2+ matches (single matches can't be swapped)
+    if (foundCount > 0) {
+        let hasLLM = false;
+        try {
+            const { checkLLMAvailableAction } = await import("@/app/actions");
+            hasLLM = await checkLLMAvailableAction();
+        } catch (_) {}
+
+        if (hasLLM) {
+            console.log(`[Scanner] Starting final LLM verification of ${foundCount} matches`);
+            updateProgress(`Verifying match accuracy...`, 96);
+
+            // Group FOUND matches by normalized merchant name
+            const merchantGroups = new Map<string, { match: MatchResult; req: ReceiptRequest }[]>();
+            for (const match of matches) {
+                if (match.status !== "FOUND") continue;
+                const req = requests.find(r => r.id === match.receiptId);
+                if (!req) continue;
+                // Normalize merchant to first significant token for grouping
+                const tokens = req.merchant.toLowerCase().split(/[^a-z0-9]+/g).filter(t => t.length >= 3);
+                const groupKey = tokens[0] || req.merchant.toLowerCase();
+                const group = merchantGroups.get(groupKey) || [];
+                group.push({ match, req });
+                merchantGroups.set(groupKey, group);
+            }
+
+            for (const [merchant, group] of merchantGroups) {
+                if (group.length < 2) continue;
+
+                console.log(`[Scanner] Verifying ${group.length} matches for "${merchant}"`);
+
+                const payload = group.map(({ match, req }) => ({
+                    receiptId: req.id,
+                    merchant: req.merchant,
+                    amount: req.amount,
+                    date: req.date,
+                    currency: req.currency,
+                    pdfText: extractedTexts[req.id] || match.details,
+                    emailSubject: match.details
+                }));
+
+                try {
+                    const { verifyMatchGroupAction } = await import("@/app/actions");
+                    const result = await verifyMatchGroupAction(payload);
+
+                    if (!result.verified && result.reassignments.length > 0) {
+                        console.log(`[Scanner] ⚠ Reassigning ${result.reassignments.length} matches for "${merchant}": ${result.reasoning}`);
+
+                        // Apply reassignments: swap files between receipt IDs
+                        for (const { receiptId, shouldMatchTo } of result.reassignments) {
+                            const file1 = files[receiptId];
+                            const file2 = files[shouldMatchTo];
+                            if (file1 && file2) {
+                                files[shouldMatchTo] = file1;
+                                files[receiptId] = file2;
+
+                                // Also swap extracted texts
+                                const text1 = extractedTexts[receiptId];
+                                const text2 = extractedTexts[shouldMatchTo];
+                                if (text1) extractedTexts[shouldMatchTo] = text1;
+                                if (text2) extractedTexts[receiptId] = text2;
+
+                                // Re-upload swapped files if userId available
+                                if (userId) {
+                                    try {
+                                        await uploadReceiptFile(userId, receiptId, files[receiptId]);
+                                        await uploadReceiptFile(userId, shouldMatchTo, files[shouldMatchTo]);
+                                        console.log(`[Cloud Sync] Re-uploaded swapped files for ${receiptId} ↔ ${shouldMatchTo}`);
+                                    } catch (e) {
+                                        console.error(`[Cloud Sync] Failed to re-upload swapped files`, e);
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        console.log(`[Scanner] ✓ Verified ${group.length} matches for "${merchant}"`);
+                    }
+                } catch (e) {
+                    console.error(`[Scanner] Verification failed for "${merchant}"`, e);
+                }
+            }
+
+            console.log(`[Scanner] Final verification complete.`);
+        }
+    }
 
     // Final check for missing items (stream didn't find them)
     for (const req of requests) {
