@@ -493,40 +493,21 @@ export const scanEmails = async (
 
                                 console.log(`[Scanner] ✓ [C-HTML] LLM matched ${req.merchant} to email "${candidate.subject}" (${result.confidence}%: ${result.reasoning})`);
 
-                                // Convert HTML email to PDF
-                                try {
-                                    const { htmlToPdfBlob } = await import("@/lib/pdf");
-                                    const pdfBlob = await htmlToPdfBlob(candidate.bodyHtml);
-                                    const safeFilename = `${req.merchant.replace(/[^a-zA-Z0-9]/g, '_')}_email_receipt.pdf`;
-                                    const pdfFile = new File([pdfBlob], safeFilename, { type: "application/pdf" });
+                                // Store HTML for preview — PDF available on-demand via "Make PDF" button
+                                extractedTexts[req.id] = textContent.slice(0, 3000);
+                                foundCount++;
 
-                                    files[req.id] = pdfFile;
-                                    extractedTexts[req.id] = textContent.slice(0, 3000);
-                                    foundCount++;
-                                    pdfCount++;
+                                matches.push({
+                                    receiptId: req.id,
+                                    emailId: candidate.id,
+                                    status: "FOUND",
+                                    confidence: result.confidence,
+                                    details: `HTML email: "${candidate.subject}" (${result.reasoning})`,
+                                    matchedHtml: candidate.bodyHtml
+                                });
 
-                                    matches.push({
-                                        receiptId: req.id,
-                                        emailId: candidate.id,
-                                        status: "FOUND",
-                                        confidence: result.confidence,
-                                        details: `HTML email → PDF: "${candidate.subject}" (${result.reasoning})`
-                                    });
-
-                                    if (userId) {
-                                        try {
-                                            const storagePath = await uploadReceiptFile(userId, req.id, pdfFile);
-                                            console.log(`[Cloud Sync] Uploaded HTML→PDF: ${storagePath}`);
-                                        } catch (e) {
-                                            console.error(`[Cloud Sync] Failed to upload HTML→PDF`, e);
-                                        }
-                                    }
-
-                                    unmatchedRequests.delete(result.matchId);
-                                    updateProgress(`Matched ${req.merchant} (email)!`, 94);
-                                } catch (pdfErr) {
-                                    console.error(`[Scanner] HTML→PDF conversion failed for "${candidate.subject}"`, pdfErr);
-                                }
+                                unmatchedRequests.delete(result.matchId);
+                                updateProgress(`Matched ${req.merchant} (email)!`, 94);
                             }
                         }
                     } catch (htmlErr) {
