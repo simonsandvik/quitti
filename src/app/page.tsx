@@ -1,6 +1,6 @@
 "use client";
 
-import { signIn, signOut, useSession } from "next-auth/react";
+import { signIn, signOut, useSession, getSession } from "next-auth/react";
 import { ArrowRight, Mail, Megaphone, Shield, Upload } from "lucide-react";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Button } from "@/components/ui/Button";
@@ -335,6 +335,11 @@ export default function Home() {
           setSearchProgress(pct);
           if (found !== undefined) setFoundCount(found);
           if (pdfs !== undefined) setPdfCount(pdfs);
+        },
+        undefined,
+        async () => {
+          const s = await getSession();
+          return (s as any)?.accessToken || null;
         }
       );
       console.log(`[Diagnostic] scanEmails finished. Matches: ${scanMatches.length}. IDs:`, scanMatches.map(m => m.receiptId));

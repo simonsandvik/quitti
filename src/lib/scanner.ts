@@ -39,7 +39,8 @@ export const scanEmails = async (
     sessions: any[],
     requests: ReceiptRequest[],
     onProgress?: (status: string, percentage: number, foundCount: number, pdfCount: number) => void,
-    userId?: string
+    userId?: string,
+    getRefreshedToken?: () => Promise<string | null>
 ): Promise<{ matches: MatchResult[], candidates: EmailCandidate[], files: Record<string, File> }> => {
     console.log(`[Scanner] Starting scan for ${requests.length} receipts.`);
 
@@ -65,7 +66,7 @@ export const scanEmails = async (
     for (const session of validSessions) {
         let sessionCandidates: EmailCandidate[] = [];
         const provider = (session?.provider === "google" ? "google" : (session?.provider === "azure-ad" ? "azure-ad" : (session?.provider === "facebook" ? "facebook" : undefined))) as "google" | "azure-ad" | "facebook" | undefined;
-        const token = session?.accessToken;
+        let token = session?.accessToken;
         const email = session?.user?.email || "unknown";
         let currentProgressCount = 0;
 
@@ -157,7 +158,11 @@ export const scanEmails = async (
                         } else {
                             blob = await getOutlookAttachment(token, pdf.messageId, pdf.attachmentId);
                         }
-                        if (!blob) return;
+                        if (!blob) {
+                            nullBlobStreak++;
+                            return;
+                        }
+                        nullBlobStreak = 0; // Successful download resets streak
 
                         // Extract text
                         const arrayBuffer = await blob.arrayBuffer();
@@ -201,41 +206,93 @@ export const scanEmails = async (
 
                             if (!isNew && !isUpgrade) return;
 
-                            if (isUpgrade) {
-                                console.log(`[Scanner] ↑ Upgrade: ${req.merchant} (${req.amount}) ${existingConf}% → 100% (Rule: ${pdf.attachmentName})`);
-                                // Remove old match entry
-                                const oldIdx = matches.findIndex(m => m.receiptId === req.id);
-                                if (oldIdx !== -1) matches.splice(oldIdx, 1);
-                            } else {
-                                console.log(`[Scanner] ✓ Rule: ${req.merchant} (${req.amount}) → ${pdf.attachmentName}`);
-                                foundCount++;
-                                pdfCount++;
-                            }
+                            // LLM confirmation: rule-based alone produces false positives
+                            if (useLLM) {
+                                llmCalls++;
+                                const { verifyReceiptWithLLMAction } = await import("@/app/actions");
+                                const confirmation = await verifyReceiptWithLLMAction(
+                                    text,
+                                    [{ id: req.id, amount: req.amount, date: req.date, merchant: req.merchant, currency: req.currency }],
+                                    { subject: pdf.emailSubject || '', sender: pdf.emailSender || '', filename: pdf.attachmentName }
+                                );
 
-                            const file = new File([fileBytes], pdf.attachmentName, { type: "application/pdf" });
-                            files[req.id] = file;
-                            extractedTexts[req.id] = text.slice(0, 4000);
+                                if (!confirmation.matchId || confirmation.confidence < 50) {
+                                    console.log(`[Scanner] ✗ LLM rejected rule match: ${req.merchant} (${req.amount}) → ${pdf.attachmentName} (${confirmation.reasoning})`);
+                                    // Don't return — fall through to normal LLM matching for other candidates
+                                } else {
+                                    // LLM confirmed rule match
+                                    if (isUpgrade) {
+                                        console.log(`[Scanner] ↑ Upgrade: ${req.merchant} (${req.amount}) ${existingConf}% → 100% (Rule+LLM: ${pdf.attachmentName})`);
+                                        const oldIdx = matches.findIndex(m => m.receiptId === req.id);
+                                        if (oldIdx !== -1) matches.splice(oldIdx, 1);
+                                    } else {
+                                        console.log(`[Scanner] ✓ Rule+LLM: ${req.merchant} (${req.amount}) → ${pdf.attachmentName}`);
+                                        foundCount++;
+                                        pdfCount++;
+                                    }
 
-                            matches.push({
-                                receiptId: req.id,
-                                emailId: pdf.messageId,
-                                status: "FOUND",
-                                confidence: 100,
-                                details: `Rule match: ${pdf.attachmentName} (${details.join(', ')})`
-                            });
+                                    const file = new File([fileBytes], pdf.attachmentName, { type: "application/pdf" });
+                                    files[req.id] = file;
+                                    extractedTexts[req.id] = text.slice(0, 4000);
 
-                            if (userId) {
-                                try {
-                                    await uploadReceiptFile(userId, req.id, file);
-                                } catch (e) {
-                                    console.error(`[Cloud Sync] Upload failed: ${pdf.attachmentName}`, e);
+                                    matches.push({
+                                        receiptId: req.id,
+                                        emailId: pdf.messageId,
+                                        status: "FOUND",
+                                        confidence: 100,
+                                        details: `Rule+LLM match: ${pdf.attachmentName} (${details.join(', ')})`
+                                    });
+
+                                    if (userId) {
+                                        try {
+                                            await uploadReceiptFile(userId, req.id, file);
+                                        } catch (e) {
+                                            console.error(`[Cloud Sync] Upload failed: ${pdf.attachmentName}`, e);
+                                        }
+                                    }
+
+                                    unmatchedRequests.delete(req.id);
+                                    matchConfidence.set(req.id, 100);
+                                    matchedPdfTexts.set(req.id, { text: text.slice(0, 1500), emailSubject: pdf.emailSubject });
+                                    return;
                                 }
-                            }
+                            } else {
+                                // No LLM available — accept rule match as before
+                                if (isUpgrade) {
+                                    console.log(`[Scanner] ↑ Upgrade: ${req.merchant} (${req.amount}) ${existingConf}% → 100% (Rule: ${pdf.attachmentName})`);
+                                    const oldIdx = matches.findIndex(m => m.receiptId === req.id);
+                                    if (oldIdx !== -1) matches.splice(oldIdx, 1);
+                                } else {
+                                    console.log(`[Scanner] ✓ Rule: ${req.merchant} (${req.amount}) → ${pdf.attachmentName}`);
+                                    foundCount++;
+                                    pdfCount++;
+                                }
 
-                            unmatchedRequests.delete(req.id);
-                            matchConfidence.set(req.id, 100);
-                            matchedPdfTexts.set(req.id, { text: text.slice(0, 1500), emailSubject: pdf.emailSubject });
-                            return;
+                                const file = new File([fileBytes], pdf.attachmentName, { type: "application/pdf" });
+                                files[req.id] = file;
+                                extractedTexts[req.id] = text.slice(0, 4000);
+
+                                matches.push({
+                                    receiptId: req.id,
+                                    emailId: pdf.messageId,
+                                    status: "FOUND",
+                                    confidence: 100,
+                                    details: `Rule match: ${pdf.attachmentName} (${details.join(', ')})`
+                                });
+
+                                if (userId) {
+                                    try {
+                                        await uploadReceiptFile(userId, req.id, file);
+                                    } catch (e) {
+                                        console.error(`[Cloud Sync] Upload failed: ${pdf.attachmentName}`, e);
+                                    }
+                                }
+
+                                unmatchedRequests.delete(req.id);
+                                matchConfidence.set(req.id, 100);
+                                matchedPdfTexts.set(req.id, { text: text.slice(0, 1500), emailSubject: pdf.emailSubject });
+                                return;
+                            }
                         }
 
                         // LLM matching (only for PDFs that passed amount filter but rule-based missed)
@@ -298,9 +355,33 @@ export const scanEmails = async (
 
                 // Process all PDFs in parallel batches
                 const CONCURRENCY = 3;
+                const TOKEN_REFRESH_EVERY = 150; // Refresh token every ~150 PDFs
+                let lastTokenRefresh = Date.now();
+                let nullBlobStreak = 0;
+
                 for (let i = 0; i < pdfList.length; i += CONCURRENCY) {
                     // Stop early only when all requests are matched at 100% (no upgrades possible)
                     if (unmatchedRequests.size === 0 && ![...matchConfidence.values()].some(c => c < 100)) break;
+
+                    // Refresh token periodically or after many failed downloads (likely 401)
+                    const shouldRefresh = getRefreshedToken && (
+                        i > 0 && i % TOKEN_REFRESH_EVERY === 0 ||
+                        nullBlobStreak >= 6
+                    );
+                    if (shouldRefresh) {
+                        try {
+                            const freshToken = await getRefreshedToken!();
+                            if (freshToken && freshToken !== token) {
+                                token = freshToken;
+                                lastTokenRefresh = Date.now();
+                                nullBlobStreak = 0;
+                                console.log(`[Scanner] Token refreshed at PDF ${i}/${pdfList.length}`);
+                            }
+                        } catch (e) {
+                            console.error('[Scanner] Token refresh failed:', e);
+                        }
+                    }
+
                     const batch = pdfList.slice(i, i + CONCURRENCY);
                     const progressPercent = 10 + Math.floor((i / pdfList.length) * 70);
                     updateProgress(`Processing PDF ${i + 1}-${Math.min(i + CONCURRENCY, pdfList.length)}/${pdfList.length}...`, progressPercent);
