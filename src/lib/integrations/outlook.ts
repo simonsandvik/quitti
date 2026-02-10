@@ -316,11 +316,22 @@ export const searchOutlookForPdfs = async (
 
 export const getOutlookAttachment = async (accessToken: string, messageId: string, attachmentId: string): Promise<Blob | null> => {
     try {
-        const res = await fetch(`${GRAPH_API_BASE}/messages/${messageId}/attachments/${attachmentId}`, {
-            headers: { Authorization: `Bearer ${accessToken}` }
-        });
+        let res: Response | null = null;
+        for (let attempt = 0; attempt < 3; attempt++) {
+            res = await fetch(`${GRAPH_API_BASE}/messages/${messageId}/attachments/${attachmentId}`, {
+                headers: { Authorization: `Bearer ${accessToken}` }
+            });
 
-        if (!res.ok) return null;
+            if (res.status === 429) {
+                const retryAfter = parseInt(res.headers.get('Retry-After') || String(2 ** attempt), 10);
+                console.log(`[Outlook Attach] Rate limited, waiting ${retryAfter}s (attempt ${attempt + 1}/3)...`);
+                await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+                continue;
+            }
+            break;
+        }
+
+        if (!res || !res.ok) return null;
 
         const data: GraphAttachment = await res.json();
         if (!data.contentBytes) return null;

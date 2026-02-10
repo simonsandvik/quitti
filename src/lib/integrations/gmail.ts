@@ -360,12 +360,23 @@ export const getGmailAttachment = async (accessToken: string, messageId: string,
     try {
         console.log(`[Gmail Attach] Fetching attachment: ${attachmentId} from message: ${messageId}`);
 
-        const res = await fetch(`${GMAIL_API_BASE}/messages/${messageId}/attachments/${attachmentId}`, {
-            headers: { Authorization: `Bearer ${accessToken}` }
-        });
+        let res: Response | null = null;
+        for (let attempt = 0; attempt < 3; attempt++) {
+            res = await fetch(`${GMAIL_API_BASE}/messages/${messageId}/attachments/${attachmentId}`, {
+                headers: { Authorization: `Bearer ${accessToken}` }
+            });
 
-        if (!res.ok) {
-            console.error(`[Gmail Attach] HTTP Error: ${res.status} ${res.statusText}`);
+            if (res.status === 429) {
+                const retryAfter = parseInt(res.headers.get('Retry-After') || String(2 ** attempt), 10);
+                console.log(`[Gmail Attach] Rate limited, waiting ${retryAfter}s (attempt ${attempt + 1}/3)...`);
+                await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+                continue;
+            }
+            break;
+        }
+
+        if (!res || !res.ok) {
+            console.error(`[Gmail Attach] HTTP Error: ${res?.status} ${res?.statusText}`);
             return null;
         }
 

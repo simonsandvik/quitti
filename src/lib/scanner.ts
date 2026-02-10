@@ -297,7 +297,7 @@ export const scanEmails = async (
                 };
 
                 // Process all PDFs in parallel batches
-                const CONCURRENCY = 10;
+                const CONCURRENCY = 3;
                 for (let i = 0; i < pdfList.length; i += CONCURRENCY) {
                     // Stop early only when all requests are matched at 100% (no upgrades possible)
                     if (unmatchedRequests.size === 0 && ![...matchConfidence.values()].some(c => c < 100)) break;
