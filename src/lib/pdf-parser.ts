@@ -12,17 +12,32 @@ export function textContainsAmount(text: string, amount: number): boolean {
     if (new RegExp(`(?<!\\d)${escDot}(?!\\d)`).test(normText)) return true;
     if (new RegExp(`(?<!\\d)${amountEU}(?!\\d)`).test(normText)) return true;
 
-    // Thousands separator: "1 234,56"
+    // Thousands separators
     if (amount >= 1000) {
-        const withSpaces = amount.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ' ').replace('.', ',');
+        const [intPart, decPart] = amountStr.split('.');
+        // "1 234,56" — space + comma (Nordic)
+        const withSpaces = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + ',' + decPart;
         const escSpaces = withSpaces.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         if (new RegExp(`(?<!\\d)${escSpaces}(?!\\d)`).test(normText)) return true;
+
+        // "1,234.56" — US format (comma + dot)
+        const usFormat = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + '.' + decPart;
+        const escUs = usFormat.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        if (new RegExp(`(?<!\\d)${escUs}(?!\\d)`).test(normText)) return true;
+
+        // "1.234,56" — EU format (dot + comma)
+        const euFormat = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, '.') + ',' + decPart;
+        const escEu = euFormat.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        if (new RegExp(`(?<!\\d)${escEu}(?!\\d)`).test(normText)) return true;
     }
 
-    // Integer match for round numbers: "25" but not "25.50" or "125"
+    // Round number variants
     if (amount === Math.floor(amount)) {
         const amountInt = Math.floor(amount).toString();
+        // "25" but not "25.50" or "125"
         if (new RegExp(`(?<!\\d)${amountInt}(?![.,\\d])`).test(normText)) return true;
+        // "25,-" or "25,--" — European round-number notation
+        if (new RegExp(`(?<!\\d)${amountInt}[,.][-–][-–]?(?!\\d)`).test(normText)) return true;
     }
 
     return false;
