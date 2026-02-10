@@ -273,13 +273,14 @@ export const ResultsTable = ({
 
                     if (extractedText) {
                         for (const req of targetReceipts) {
-                            // Skip already found?
-                            const status = (matches.find(m => m.receiptId === req.id)?.status || "NOT_FOUND");
-                            if (status === "FOUND" || newFiles[req.id]) continue;
+                            // Allow upgrade: skip only if already matched at 100% confidence
+                            const existingMatch = matches.find(m => m.receiptId === req.id);
+                            const existingConf = existingMatch?.status === "FOUND" ? existingMatch.confidence : 0;
+                            if (existingConf >= 100 || newFiles[req.id]) continue;
 
                             const { score } = matchReceiptByContent(extractedText, req);
-                            // UNIFIED LOGIC: Threshold >= 50 matches server logic (Exact Amount = 50)
-                            if (score > bestScore && score >= 50) {
+                            // Accept if score >= 50 AND better than existing match
+                            if (score > bestScore && score >= 50 && score > existingConf) {
                                 bestScore = score;
                                 bestMatchId = req.id;
                             }
@@ -295,8 +296,10 @@ export const ResultsTable = ({
                 try {
                     const { verifyReceiptWithLLMAction } = await import("@/app/actions");
                     const unmatchedReqs = targetReceipts.filter(r => {
-                        const status = matches.find(m => m.receiptId === r.id)?.status || "NOT_FOUND";
-                        return status !== "FOUND" && !newFiles[r.id];
+                        if (newFiles[r.id]) return false;
+                        const existingMatch = matches.find(m => m.receiptId === r.id);
+                        const existingConf = existingMatch?.status === "FOUND" ? existingMatch.confidence : 0;
+                        return existingConf < 100; // Include unmatched + upgradeable
                     });
 
                     if (unmatchedReqs.length > 0) {

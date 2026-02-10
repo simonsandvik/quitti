@@ -127,8 +127,9 @@ export const scanEmails = async (
                     console.error('[Scanner] Failed to initialize OCR worker:', ocrInitErr);
                 }
 
-                // Track unmatched requests
+                // Track unmatched requests and best confidence per matched request
                 const unmatchedRequests = new Set(requests.map(r => r.id));
+                const matchConfidence = new Map<string, number>(); // reqId → best confidence so far
 
                 // Check LLM availability
                 let useLLM = false;
@@ -168,11 +169,16 @@ export const scanEmails = async (
                             return;
                         }
 
-                        // Amount pre-filter: check against all unmatched transactions
-                        const activeReqs = [...unmatchedRequests].map(id => requests.find(r => r.id === id)!);
-                        if (activeReqs.length === 0) return;
+                        // Amount pre-filter: check unmatched + low-confidence matched transactions
+                        // Include already-matched requests where confidence < 100 (upgradeable)
+                        const upgradeableReqs = requests.filter(r => {
+                            if (unmatchedRequests.has(r.id)) return true; // unmatched
+                            const conf = matchConfidence.get(r.id);
+                            return conf !== undefined && conf < 100; // matched but upgradeable
+                        });
+                        if (upgradeableReqs.length === 0) return;
 
-                        const amountCandidates = activeReqs.filter(r => textContainsAmount(text, r.amount));
+                        const amountCandidates = upgradeableReqs.filter(r => textContainsAmount(text, r.amount));
                         if (amountCandidates.length === 0) {
                             skippedNoAmount++;
                             return;
@@ -189,15 +195,26 @@ export const scanEmails = async (
 
                         if (bestRuleMatch) {
                             const { req, details } = bestRuleMatch;
-                            if (!unmatchedRequests.has(req.id)) return;
+                            const existingConf = matchConfidence.get(req.id);
+                            const isUpgrade = existingConf !== undefined && existingConf < 100;
+                            const isNew = unmatchedRequests.has(req.id);
 
-                            console.log(`[Scanner] ✓ Rule: ${req.merchant} (${req.amount}) → ${pdf.attachmentName}`);
+                            if (!isNew && !isUpgrade) return;
+
+                            if (isUpgrade) {
+                                console.log(`[Scanner] ↑ Upgrade: ${req.merchant} (${req.amount}) ${existingConf}% → 100% (Rule: ${pdf.attachmentName})`);
+                                // Remove old match entry
+                                const oldIdx = matches.findIndex(m => m.receiptId === req.id);
+                                if (oldIdx !== -1) matches.splice(oldIdx, 1);
+                            } else {
+                                console.log(`[Scanner] ✓ Rule: ${req.merchant} (${req.amount}) → ${pdf.attachmentName}`);
+                                foundCount++;
+                                pdfCount++;
+                            }
 
                             const file = new File([fileBytes], pdf.attachmentName, { type: "application/pdf" });
                             files[req.id] = file;
                             extractedTexts[req.id] = text.slice(0, 4000);
-                            foundCount++;
-                            pdfCount++;
 
                             matches.push({
                                 receiptId: req.id,
@@ -216,6 +233,7 @@ export const scanEmails = async (
                             }
 
                             unmatchedRequests.delete(req.id);
+                            matchConfidence.set(req.id, 100);
                             matchedPdfTexts.set(req.id, { text: text.slice(0, 1500), emailSubject: pdf.emailSubject });
                             return;
                         }
@@ -232,15 +250,25 @@ export const scanEmails = async (
 
                             if (result.matchId && result.confidence >= 50) {
                                 const req = requests.find(r => r.id === result.matchId)!;
-                                if (!unmatchedRequests.has(result.matchId)) return;
+                                const existingConf = matchConfidence.get(req.id);
+                                const isUpgrade = existingConf !== undefined && result.confidence > existingConf;
+                                const isNew = unmatchedRequests.has(result.matchId);
 
-                                console.log(`[Scanner] ✓ LLM: ${req.merchant} (${req.amount}) → ${pdf.attachmentName} (${result.confidence}%: ${result.reasoning})`);
+                                if (!isNew && !isUpgrade) return;
+
+                                if (isUpgrade) {
+                                    console.log(`[Scanner] ↑ Upgrade: ${req.merchant} (${req.amount}) ${existingConf}% → ${result.confidence}% (LLM: ${pdf.attachmentName})`);
+                                    const oldIdx = matches.findIndex(m => m.receiptId === req.id);
+                                    if (oldIdx !== -1) matches.splice(oldIdx, 1);
+                                } else {
+                                    console.log(`[Scanner] ✓ LLM: ${req.merchant} (${req.amount}) → ${pdf.attachmentName} (${result.confidence}%: ${result.reasoning})`);
+                                    foundCount++;
+                                    pdfCount++;
+                                }
 
                                 const file = new File([fileBytes], pdf.attachmentName, { type: "application/pdf" });
                                 files[req.id] = file;
                                 extractedTexts[req.id] = text.slice(0, 4000);
-                                foundCount++;
-                                pdfCount++;
 
                                 matches.push({
                                     receiptId: req.id,
@@ -259,6 +287,7 @@ export const scanEmails = async (
                                 }
 
                                 unmatchedRequests.delete(result.matchId);
+                                matchConfidence.set(req.id, result.confidence);
                                 matchedPdfTexts.set(req.id, { text: text.slice(0, 1500), emailSubject: pdf.emailSubject });
                             }
                         }
@@ -270,7 +299,8 @@ export const scanEmails = async (
                 // Process all PDFs in parallel batches
                 const CONCURRENCY = 10;
                 for (let i = 0; i < pdfList.length; i += CONCURRENCY) {
-                    if (unmatchedRequests.size === 0) break;
+                    // Stop early only when all requests are matched at 100% (no upgrades possible)
+                    if (unmatchedRequests.size === 0 && ![...matchConfidence.values()].some(c => c < 100)) break;
                     const batch = pdfList.slice(i, i + CONCURRENCY);
                     const progressPercent = 10 + Math.floor((i / pdfList.length) * 70);
                     updateProgress(`Processing PDF ${i + 1}-${Math.min(i + CONCURRENCY, pdfList.length)}/${pdfList.length}...`, progressPercent);
