@@ -33,7 +33,7 @@ import { searchGmailForPdfs, getGmailAttachment } from "./integrations/gmail";
 import { searchOutlookForPdfs, getOutlookAttachment } from "./integrations/outlook";
 import { parsePdfContent, verifyPdfForRequest, textContainsAmount } from "./pdf-parser";
 import type { PdfAttachmentInfo } from "./integrations/outlook";
-import { uploadReceiptFile } from "./supabase";
+// uploadReceiptFile removed — uploads now go through server actions
 
 export const scanEmails = async (
     sessions: any[],
@@ -245,7 +245,11 @@ export const scanEmails = async (
 
                                     if (userId) {
                                         try {
-                                            await uploadReceiptFile(userId, req.id, file);
+                                            const { uploadReceiptServerAction } = await import("@/app/actions");
+                                            const formData = new FormData();
+                                            formData.append("file", file);
+                                            formData.append("receiptId", req.id);
+                                            await uploadReceiptServerAction(formData);
                                         } catch (e) {
                                             console.error(`[Cloud Sync] Upload failed: ${pdf.attachmentName}`, e);
                                         }
@@ -282,7 +286,11 @@ export const scanEmails = async (
 
                                 if (userId) {
                                     try {
-                                        await uploadReceiptFile(userId, req.id, file);
+                                        const { uploadReceiptServerAction } = await import("@/app/actions");
+                                        const formData = new FormData();
+                                        formData.append("file", file);
+                                        formData.append("receiptId", req.id);
+                                        await uploadReceiptServerAction(formData);
                                     } catch (e) {
                                         console.error(`[Cloud Sync] Upload failed: ${pdf.attachmentName}`, e);
                                     }
@@ -337,7 +345,11 @@ export const scanEmails = async (
 
                                 if (userId) {
                                     try {
-                                        await uploadReceiptFile(userId, req.id, file);
+                                        const { uploadReceiptServerAction } = await import("@/app/actions");
+                                        const formData = new FormData();
+                                        formData.append("file", file);
+                                        formData.append("receiptId", req.id);
+                                        await uploadReceiptServerAction(formData);
                                     } catch (e) {
                                         console.error(`[Cloud Sync] Upload failed: ${pdf.attachmentName}`, e);
                                     }

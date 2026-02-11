@@ -410,6 +410,186 @@ If any are swapped (receipt A matched to transaction B when it should be transac
     }
 }
 
+// --- DATA LOADING (replaces anon-key client reads) ---
+
+export async function loadLatestBatchAction() {
+    const session = await getServerSession(authOptions);
+    if (!session || !session.user) return null;
+    const userId = (session.user as any).id;
+
+    const supabaseAdmin = getSupabaseAdmin();
+    const { data: batches } = await supabaseAdmin
+        .from('batches')
+        .select('*')
+        .eq('created_by', userId)
+        .eq('status', 'active')
+        .order('created_at', { ascending: false })
+        .limit(1);
+
+    if (!batches || batches.length === 0) return null;
+    return batches[0];
+}
+
+export async function loadBatchRequestsAction(batchId: string) {
+    const session = await getServerSession(authOptions);
+    if (!session || !session.user) throw new Error("Unauthorized");
+
+    const supabaseAdmin = getSupabaseAdmin();
+    const { data, error } = await supabaseAdmin
+        .from('receipt_requests')
+        .select(`
+            *,
+            matched_receipts (*)
+        `)
+        .eq('batch_id', batchId);
+
+    if (error) throw error;
+    return data || [];
+}
+
+export async function createBatchAction(name: string, organizationId?: string) {
+    const session = await getServerSession(authOptions);
+    if (!session || !session.user) throw new Error("Unauthorized");
+    const userId = (session.user as any).id;
+
+    const supabaseAdmin = getSupabaseAdmin();
+    let targetOrgId = organizationId;
+
+    if (!targetOrgId) {
+        const { data: members } = await supabaseAdmin
+            .from('organization_members')
+            .select('organization_id')
+            .eq('user_id', userId)
+            .limit(1);
+
+        if (members && members.length > 0) {
+            targetOrgId = members[0].organization_id;
+        } else {
+            const { data: newOrg, error: orgError } = await supabaseAdmin
+                .from('organizations')
+                .insert({ name: 'My Personal Team' })
+                .select()
+                .single();
+
+            if (newOrg && !orgError) {
+                targetOrgId = newOrg.id;
+                await supabaseAdmin.from('organization_members').insert({
+                    organization_id: newOrg.id,
+                    user_id: userId,
+                    role: 'admin'
+                });
+            }
+        }
+    }
+
+    const { data, error } = await supabaseAdmin
+        .from('batches')
+        .insert({
+            created_by: userId,
+            name,
+            organization_id: targetOrgId,
+            status: 'active'
+        })
+        .select()
+        .single();
+
+    if (error) throw error;
+    return data;
+}
+
+export async function saveReceiptRequestsAction(
+    batchId: string,
+    requests: { id: string; merchant: string; amount: number; currency: string; date: string; status?: string }[]
+) {
+    const session = await getServerSession(authOptions);
+    if (!session || !session.user) throw new Error("Unauthorized");
+
+    const supabaseAdmin = getSupabaseAdmin();
+    const rows = requests.map(r => ({
+        id: r.id,
+        batch_id: batchId,
+        merchant: r.merchant,
+        amount: r.amount,
+        currency: r.currency || 'EUR',
+        date: r.date,
+        status: r.status || 'pending',
+    }));
+
+    const { error } = await supabaseAdmin
+        .from('receipt_requests')
+        .upsert(rows);
+
+    if (error) throw error;
+}
+
+export async function removeMatchResultAction(requestId: string) {
+    const session = await getServerSession(authOptions);
+    if (!session || !session.user) throw new Error("Unauthorized");
+
+    const supabaseAdmin = getSupabaseAdmin();
+    const { error } = await supabaseAdmin
+        .from('matched_receipts')
+        .delete()
+        .eq('request_id', requestId);
+
+    if (error) throw error;
+
+    await supabaseAdmin
+        .from('receipt_requests')
+        .update({ status: 'pending' })
+        .eq('id', requestId);
+}
+
+export async function uploadAndSaveReceiptAction(formData: FormData) {
+    const session = await getServerSession(authOptions);
+    if (!session || !session.user) throw new Error("Unauthorized");
+    const userId = (session.user as any).id;
+
+    const file = formData.get("file") as File;
+    const receiptId = formData.get("receiptId") as string;
+    if (!file || !receiptId) throw new Error("Missing required fields");
+
+    const supabaseAdmin = getSupabaseAdmin();
+
+    // Upload file
+    const ext = file.name.split('.').pop();
+    const path = `${userId}/${receiptId}.${ext}`;
+    const arrayBuffer = await file.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    const { error: uploadError } = await supabaseAdmin.storage
+        .from('receipts')
+        .upload(path, buffer, {
+            contentType: file.type || 'application/pdf',
+            upsert: true
+        });
+    if (uploadError) throw uploadError;
+
+    // Save match result
+    await supabaseAdmin
+        .from('matched_receipts')
+        .delete()
+        .eq('request_id', receiptId);
+
+    const { error: matchError } = await supabaseAdmin
+        .from('matched_receipts')
+        .insert({
+            request_id: receiptId,
+            file_url: path,
+            matched_by: userId,
+            confidence: 100,
+            details: `Manual Upload (Drag & Drop) - ${file.name}`
+        });
+    if (matchError) throw matchError;
+
+    await supabaseAdmin
+        .from('receipt_requests')
+        .update({ status: 'found' })
+        .eq('id', receiptId);
+
+    return path;
+}
+
 export async function markAsTrulyMissingServerAction(requestId: string, reason: string) {
     const session = await getServerSession(authOptions);
     if (!session || !session.user) {

@@ -8,7 +8,6 @@ import { Card } from "./ui/Card";
 import { MatchResult } from "@/lib/matcher";
 import { ReceiptRequest } from "@/lib/parser";
 import { getMerchantHierarchy } from "@/lib/grouping";
-import { uploadReceiptFile, updateMatchResult, removeMatchResult } from "@/lib/supabase";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { StatusBadge } from "./StatusBadge";
@@ -16,7 +15,7 @@ import { MerchantGroup } from "./MerchantGroup";
 import { ShareModal } from "./ShareModal";
 import { TeamSettingsModal } from "./TeamSettingsModal";
 import { MissingReceiptModal } from "./MissingReceiptModal";
-import { markAsTrulyMissingServerAction } from "@/app/actions";
+import { markAsTrulyMissingServerAction, removeMatchResultAction, uploadAndSaveReceiptAction } from "@/app/actions";
 
 interface ResultsTableProps {
     receipts: ReceiptRequest[];
@@ -117,7 +116,7 @@ export const ResultsTable = ({
                 return next;
             });
             // Also remove from server if it was a match
-            removeMatchResult(id).then(() => {
+            removeMatchResultAction(id).then(() => {
                 // Refresh to update 'matches' prop from server
                 router.refresh();
             }).catch(err => console.error("Failed to remove match", err));
@@ -158,17 +157,12 @@ export const ResultsTable = ({
 
     const uploadAndSave = async (receiptId: string, file: File) => {
         if (!session?.user) return;
-        const userId = (session.user as any).id;
         try {
             console.log(`[Cloud] Uploading receipt ${receiptId}...`);
-            const path = await uploadReceiptFile(userId, receiptId, file);
-            await updateMatchResult(receiptId, {
-                receiptId,
-                emailId: "manual", // Mock emailId for manual uplaod
-                status: "FOUND",
-                confidence: 100, // Manual match is 100%
-                details: `Manual Upload (Drag & Drop) - ${file.name}`
-            }, userId, path);
+            const formData = new FormData();
+            formData.append("file", file);
+            formData.append("receiptId", receiptId);
+            const path = await uploadAndSaveReceiptAction(formData);
             console.log(`[Cloud] Upload complete: ${path}`);
         } catch (e) {
             console.error("Failed to upload receipt", e);

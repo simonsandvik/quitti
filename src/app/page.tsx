@@ -20,7 +20,7 @@ import { scanEmails } from "@/lib/scanner";
 import { MatchResult } from "@/lib/matcher";
 import { generateMissingReceiptDeclaration } from "@/lib/declaration-generator";
 import { exportReceipts } from "@/lib/export";
-import { createBatch, saveReceiptRequests, updateMatchResult, getUserBatches, supabase } from "@/lib/supabase";
+import { loadLatestBatchAction, loadBatchRequestsAction, createBatchAction, saveReceiptRequestsAction } from "@/app/actions";
 
 export default function Home() {
   const { data: session, status } = useSession();
@@ -118,17 +118,10 @@ export default function Home() {
         }
 
         try {
-          const { data: batches, error } = await supabase
-            .from('batches')
-            .select('*')
-            // @ts-ignore
-            .eq('created_by', (session.user as any).id)
-            .eq('status', 'active')
-            .order('created_at', { ascending: false })
-            .limit(1);
+          const batch = await loadLatestBatchAction();
 
-          if (batches && batches.length > 0) {
-            const batchId = batches[0].id;
+          if (batch) {
+            const batchId = batch.id;
 
             // RACE CONDITION FIX: check ref instead of state
             if (isSearchingRef.current) {
@@ -145,16 +138,10 @@ export default function Home() {
             setActiveBatchId(batchId);
             localStorage.setItem("quitti-active-batch", batchId);
 
-            const { data: requests, error: reqError } = await supabase
-              .from('receipt_requests')
-              .select(`
-                *,
-                matched_receipts (*)
-              `)
-              .eq('batch_id', batchId);
+            const requests = await loadBatchRequestsAction(batchId);
 
             if (requests && requests.length > 0) {
-              const mappedReceipts: ReceiptRequest[] = requests.map(r => ({
+              const mappedReceipts: ReceiptRequest[] = requests.map((r: any) => ({
                 id: r.id,
                 date: r.date,
                 merchant: r.merchant,
@@ -164,7 +151,7 @@ export default function Home() {
               }));
 
               const mappedMatches: MatchResult[] = [];
-              requests.forEach(r => {
+              requests.forEach((r: any) => {
                 if (r.matched_receipts && r.matched_receipts.length > 0) {
                   r.matched_receipts.forEach((m: any) => {
                     mappedMatches.push({
@@ -282,9 +269,8 @@ export default function Home() {
       try {
         setIsSaving(true);
         const batchName = `Batch ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}`;
-        // @ts-ignore
-        const newBatch = await createBatch((session.user as any).id, batchName);
-        await saveReceiptRequests(newBatch.id, data);
+        const newBatch = await createBatchAction(batchName);
+        await saveReceiptRequestsAction(newBatch.id, data);
         setActiveBatchId(newBatch.id);
         localStorage.setItem("quitti-active-batch", newBatch.id);
       } catch (error) {
@@ -362,8 +348,7 @@ export default function Home() {
         try {
           if (!currentBatchId) {
             const batchName = `Batch ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}`;
-            // @ts-ignore
-            const newBatch = await createBatch(userId, batchName);
+            const newBatch = await createBatchAction(batchName);
             currentBatchId = newBatch.id;
             setActiveBatchId(newBatch.id);
             localStorage.setItem("quitti-active-batch", newBatch.id);
@@ -373,7 +358,7 @@ export default function Home() {
           // ALWAYS upsert receipts to this batch to ensure they exist in DB (handles refresh/stale state)
           if (currentBatchId) {
             console.log(`[Diagnostic] Syncing ${receipts.length} receipts to batch ${currentBatchId}...`);
-            await saveReceiptRequests(currentBatchId, receipts);
+            await saveReceiptRequestsAction(currentBatchId, receipts);
             console.log(`[Diagnostic] Synced receipts to batch ${currentBatchId}`);
           } else {
             throw new Error("Failed to resolve currentBatchId");
