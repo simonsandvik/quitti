@@ -115,42 +115,11 @@ export const exportReceipts = async (
             mimeType: "application/zip"
         });
 
-        console.log(`[Export] Zip generated, size: ${content.size} bytes.`);
-
-        // 1. Try SERVER-SIDE Export (Authenticated)
-        // This guarantees the filename 'receipts_hunted.zip' via Content-Disposition header
-        try {
-            console.log("[Export] Attempting Server-Side Upload...");
-            const { uploadExportZipServerAction, getDownloadUrlServerAction } = await import("@/app/actions");
-
-            // This will throw if unauthenticated (shared portal)
-            const formData = new FormData();
-            formData.append("file", content, "receipts_hunted.zip");
-
-            const path = await uploadExportZipServerAction(formData);
-            console.log(`[Export] Uploaded to temporary path: ${path}`);
-
-            const url = await getDownloadUrlServerAction(path, "receipts_hunted.zip");
-            console.log(`[Export] Redirecting to signed URL: ${url}`);
-
-            // Trigger download via navigation - Browser MUST respect header
-            window.location.assign(url);
-            return;
-
-        } catch (serverErr) {
-            console.warn("[Export] Server-side export unavailable (likely Shared Portal or Offline). Falling back to Client-Side.", serverErr);
-        }
-
-        // 2. Fallback: Client-Side Export (Shared Portal / Unauthenticated)
-        try {
-            console.log("[Export] Triggering Client-Side download...");
-            saveAs(content, "receipts_hunted.zip");
-        } catch (clientErr) {
-            console.error("[Export] Client-side download failed:", clientErr);
-            alert("Export failed. Please check browser permissions.");
-        }
+        console.log(`[Export] Zip generated, size: ${content.size} bytes. Triggering download...`);
+        saveAs(content, "receipts_hunted.zip");
     } catch (e) {
-        console.error("[Export] Zip generation error:", e);
+        console.error("[Export] Zip generation/download error:", e);
+        alert("Export failed. Please try again.");
         throw e;
     }
 };
